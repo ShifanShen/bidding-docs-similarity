@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+transformers
+torch
+scikit-learn
+python-docx
+PyPDF2
+pymupdf
+python-multipart
+scipy

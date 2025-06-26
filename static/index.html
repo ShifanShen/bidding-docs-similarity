@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>投标文件相似度检测</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#165DFF',
+                        secondary: '#36CFC9',
+                        neutral: '#F5F7FA',
+                        dark: '#1D2129',
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'system-ui', 'sans-serif'],
+                    },
+                }
+            }
+        }
+    </script>
+    <style type="text/tailwindcss">
+        @layer utilities {
+            .content-auto {
+                content-visibility: auto;
+            }
+            .file-drop-area {
+                @apply border-2 border-dashed border-gray-300 rounded-lg p-8 text-center transition-all duration-300 hover:border-primary;
+            }
+            .file-drop-area.active {
+                @apply border-primary bg-blue-50;
+            }
+            .result-card {
+                @apply bg-white rounded-xl shadow-lg p-6 transition-all duration-500 transform hover:scale-[1.01];
+            }
+        }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen flex flex-col">
+    <header class="bg-white shadow-sm py-4 px-6">
+        <div class="container mx-auto flex justify-between items-center">
+            <h1 class="text-[clamp(1.5rem,3vw,2rem)] font-bold text-primary flex items-center">
+                <i class="fa fa-file-text-o mr-2"></i>投标文件相似度检测
+            </h1>
+        </div>
+    </header>
+
+    <main class="container mx-auto px-4 py-8 flex-grow">
+        <div class="max-w-4xl mx-auto bg-white rounded-2xl shadow-md p-6 md:p-8 mb-8">
+            <h2 class="text-[clamp(1.2rem,2vw,1.5rem)] font-semibold mb-6 text-center">上传投标文件进行相似度比对</h2>
+
+            <div class="grid md:grid-cols-2 gap-6 mb-8">
+                <!-- 文件上传区域 1 -->
+                <div class="file-upload-container">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">文件一上传</label>
+                    <div id="drop-area-1" class="file-drop-area">
+                        <input type="file" id="file1" class="hidden" accept=".docx,.pdf,.txt" />
+                        <i class="fa fa-cloud-upload text-3xl text-gray-400 mb-2"></i>
+                        <p class="text-gray-500 mb-2">拖放文件到此处，或<span class="text-primary cursor-pointer">点击上传</span></p>
+                        <p id="file1-name" class="text-sm text-gray-500 mt-2"></p>
+                    </div>
+                </div>
+
+                <!-- 文件上传区域 2 -->
+                <div class="file-upload-container">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">文件二上传</label>
+                    <div id="drop-area-2" class="file-drop-area">
+                        <input type="file" id="file2" class="hidden" accept=".docx,.pdf,.txt" />
+                        <i class="fa fa-cloud-upload text-3xl text-gray-400 mb-2"></i>
+                        <p class="text-gray-500 mb-2">拖放文件到此处，或<span class="text-primary cursor-pointer">点击上传</span></p>
+                        <p id="file2-name" class="text-sm text-gray-500 mt-2"></p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="text-center">
+                <button id="compare-btn" class="bg-primary hover:bg-primary/90 text-white font-medium py-2 px-6 rounded-lg transition duration-300 transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+                    <i class="fa fa-calculator mr-2"></i>计算相似度
+                </button>
+            </div>
+        </div>
+
+        <!-- 结果展示区域 -->
+        <div id="result-section" class="max-w-4xl mx-auto bg-white rounded-2xl shadow-md p-6 md:p-8 hidden">
+            <h2 class="text-xl font-semibold mb-4 text-center">相似度检测结果</h2>
+            <div class="result-card text-center p-8">
+                <div class="flex justify-center mb-4">
+                        <div class="w-32 h-32 rounded-full bg-blue-100 flex items-center justify-center">
+                            <span id="similarity-score" class="text-4xl font-bold text-primary">--</span>
+                        </div>
+                    </div>
+                    <p class="text-gray-600 mb-2">文件相似度</p>
+                    <div class="w-full bg-gray-200 rounded-full h-4 mb-6">
+                        <div id="similarity-bar" class="bg-primary h-4 rounded-full transition-all duration-1000 ease-out" style="width: 0%"></div>
+                    </div>
+                    <p id="similarity-text" class="text-gray-700"></p>
+            </div>
+        </div>
+    </main>
+
+    <footer class="bg-gray-100 py-4 text-center text-gray-600 text-sm">
+        <p>基于 bert-base-chinese | 投标文件相似度检测系统</p>
+    </footer>
+
+    <script>
+        // 文件上传功能实现
+        document.addEventListener('DOMContentLoaded', function() {
+            // 为两个上传区域添加相同的功能
+            [1, 2].forEach(num => {
+                const dropArea = document.getElementById(`drop-area-${num}`);
+                const fileInput = document.getElementById(`file${num}`);
+                const fileNameDisplay = document.getElementById(`file${num}-name`);
+                const compareBtn = document.getElementById('compare-btn');
+
+                // 点击上传区域触发文件选择
+                dropArea.addEventListener('click', () => fileInput.click());
+
+                // 文件选择处理
+                fileInput.addEventListener('change', (e) => {
+                    if (e.target.files.length) {
+                        displayFileName(fileNameDisplay, e.target.files[0]);
+                        checkUploads();
+                    }
+                });
+
+                // 拖放功能
+                ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                    dropArea.addEventListener(eventName, preventDefaults, false);
+                });
+
+                function preventDefaults(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                }
+
+                ['dragenter', 'dragover'].forEach(eventName => {
+                    dropArea.addEventListener(eventName, () => {
+                        dropArea.classList.add('active');
+                    }, false);
+                });
+
+                ['dragleave', 'drop'].forEach(eventName => {
+                    dropArea.addEventListener(eventName, () => {
+                        dropArea.classList.remove('active');
+                    }, false);
+                });
+
+                dropArea.addEventListener('drop', (e) => {
+                    const dt = e.dataTransfer;
+                    const files = dt.files;
+                    if (files.length) {
+                        fileInput.files = files;
+                        displayFileName(fileNameDisplay, files[0]);
+                        checkUploads();
+                    }
+                });
+            });
+
+            // 显示文件名
+            function displayFileName(element, file) {
+                element.textContent = file.name;
+                element.classList.add('font-medium');
+            }
+
+            // 检查是否两个文件都已上传
+            function checkUploads() {
+                const file1Name = document.getElementById('file1-name').textContent;
+                const file2Name = document.getElementById('file2-name').textContent;
+                const compareBtn = document.getElementById('compare-btn');
+
+                compareBtn.disabled = !(file1Name && file2Name);
+            }
+
+            // 相似度检测功能实现
+            document.getElementById('compare-btn').addEventListener('click', async function() {
+                const file1 = document.querySelector('#file1').files[0];
+                const file2 = document.querySelector('#file2').files[0];
+
+                if (!file1 || !file2) {
+                    alert('请上传两个文件后再进行比较');
+                    return;
+                }
+
+                // 显示加载状态
+                this.disabled = true;
+                this.innerHTML = '<i class="fa fa-spinner fa-spin mr-2"></i>处理中...';
+                document.getElementById('result-section').classList.remove('hidden');
+                document.getElementById('similarity-score').textContent = '...';
+                document.getElementById('similarity-bar').style.width = '0%';
+                document.getElementById('similarity-text').textContent = '正在处理文件...';
+
+                try {
+                    // 创建FormData对象
+                    const formData = new FormData();
+                    formData.append('file1', file1);
+                    formData.append('file2', file2);
+
+                    // 发送请求
+                    const response = await fetch('/upload-and-compare', {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    if (!response.ok) {
+                        throw new Error('服务器错误: ' + response.statusText);
+                    }
+
+                    const result = await response.json();
+                    const similarity = result.similarity * 100;
+                    const percentage = Math.round(similarity);
+
+                    // 更新UI显示结果
+                    document.getElementById('similarity-score').textContent = `${percentage}%`;
+                    document.getElementById('similarity-bar').style.width = `${percentage}%`;
+
+                    // 根据相似度给出评价
+                    let evaluation = '';
+                    if (percentage >= 80) {
+                        evaluation = '高度相似 - 存在严重抄袭风险';
+                    } else if (percentage >= 50) {
+                        evaluation = '中度相似 - 需要进一步审查';
+                    } else if (percentage >= 30) {
+                        evaluation = '低度相似 - 存在部分相似内容';
+                    } else {
+                        evaluation = '相似度较低 - 内容差异较大';
+                    }
+                    document.getElementById('similarity-text').textContent = `相似度评价: ${evaluation}`;
+
+                } catch (error) {
+                    console.error('比较过程中出错:', error);
+                    document.getElementById('similarity-score').textContent = '错误';
+                    document.getElementById('similarity-text').textContent = `处理错误: ${error.message}`;
+                } finally {
+                    // 恢复按钮状态
+                    this.disabled = false;
+                    this.innerHTML = '<i class="fa fa-calculator mr-2"></i>计算相似度';
+                }
+            });
+        });
+    </script>
+</body>
+</html>
