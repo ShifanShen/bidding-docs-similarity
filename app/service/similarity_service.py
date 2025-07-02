@@ -14,10 +14,21 @@ import psutil
 import threading
 
 if __name__ == "__main__":
+    # 配置日志格式
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
+# =============================
+# 相似度分析服务主类
+# =============================
 class SimilarityService:
     def __init__(self, storage_dir: str = "tmp_files", max_concurrent_tasks: int = 3):
+        """
+        初始化服务，包括：
+        - 创建存储目录
+        - 加载本地文本向量模型
+        - 加载停用词表
+        - 初始化任务队列和并发控制
+        """
         self.storage_dir = storage_dir
         os.makedirs(self.storage_dir, exist_ok=True)
         self.tasks = {}  # 任务ID -> {status, result, progress, created_time, file_info}
@@ -29,6 +40,9 @@ class SimilarityService:
         self.task_queue = []
 
     def _load_text2vec_model(self):
+        """
+        加载本地 text2vec 语义向量模型，优先使用 GPU。
+        """
         model_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../local_text2vec_model'))
         model = SentenceTransformer(model_path)
         if torch.cuda.is_available():
@@ -36,9 +50,15 @@ class SimilarityService:
         return model
 
     def _encode_texts(self, texts: List[str]):
+        """
+        对文本列表进行向量化。
+        """
         return self.model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
 
     def _load_stopwords(self):
+        """
+        加载停用词表。
+        """
         stopwords_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../stopwords.txt'))
         if os.path.exists(stopwords_path):
             with open(stopwords_path, encoding='utf-8') as f:
@@ -46,6 +66,9 @@ class SimilarityService:
         return set()
 
     def save_file(self, file_bytes, filename: str) -> str:
+        """
+        保存上传的文件到本地存储目录。
+        """
         safe_name = filename.replace("..", "_").replace("/", "_")
         save_path = os.path.join(self.storage_dir, safe_name)
         with open(save_path, "wb") as f:
@@ -53,6 +76,9 @@ class SimilarityService:
         return save_path
 
     def start_analysis(self, tender_file_path: str, bid_file_paths: List[str]) -> str:
+        """
+        启动一次分析任务，将任务加入队列并异步处理。
+        """
         task_id = str(uuid.uuid4())
         task_info = {
             "status": "pending",
@@ -71,6 +97,9 @@ class SimilarityService:
         return task_id
 
     def _process_queue(self):
+        """
+        处理任务队列，控制最大并发数。
+        """
         with self.task_lock:
             while self.running_tasks < self.max_concurrent_tasks and self.task_queue:
                 task_id, tender_file_path, bid_file_paths = self.task_queue.pop(0)
@@ -80,6 +109,11 @@ class SimilarityService:
                 thread.start()
 
     def _extract_and_segment(self, file_path: str) -> List[Dict]:
+        """
+        文本提取与分段：支持 PDF、Word 文档。
+        每段去除停用词并检测语法错误。
+        返回：[{page, text, grammar_errors}]
+        """
         ext = os.path.splitext(file_path)[-1].lower()
         if ext == '.pdf':
             pages = extract_text_from_pdf(file_path)
@@ -106,6 +140,9 @@ class SimilarityService:
     
     # cpu only
     def _faiss_max_sim(self, query_vecs, base_vecs):
+       """
+       使用 faiss 进行最大相似度检索（CPU 版本）。
+       """
        if len(base_vecs) == 0 or len(query_vecs) == 0:
            return [], []
        dim = base_vecs.shape[1]
@@ -118,6 +155,9 @@ class SimilarityService:
     
     # gpu支持
     # def _faiss_max_sim(self, query_vecs, base_vecs):
+    #     """
+    #     使用 faiss 进行最大相似度检索（支持 GPU）。
+    #     """
     #     if len(base_vecs) == 0 or len(query_vecs) == 0:
     #         return [], []
     #     dim = base_vecs.shape[1]
@@ -140,7 +180,9 @@ class SimilarityService:
     #     return sims.flatten(), idxs.flatten()
 
     def _batch_encode(self, texts: List[str], batch_size: int = 1000):
-        """分批向量化，防止 OOM"""
+        """
+        分批向量化文本，防止内存溢出（OOM）。
+        """
         all_vecs = []
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i+batch_size]
@@ -149,6 +191,9 @@ class SimilarityService:
         return np.vstack(all_vecs) if all_vecs else np.zeros((0, 384))
 
     def _log_resource(self, tag: str, extra: Optional[dict] = None):
+        """
+        记录当前进程的内存和 CPU 占用，便于监控。
+        """
         process = psutil.Process(os.getpid())
         mem = process.memory_info().rss / 1024 / 1024  # MB
         cpu = process.cpu_percent(interval=0.1)
@@ -158,6 +203,15 @@ class SimilarityService:
         logging.info(log_msg)
 
     def _analyze_task(self, task_id: str, tender_file_path: str, bid_file_paths: List[str], timeout_sec: int = 1200):
+        """
+        任务主流程：
+        1. 招标文件分段并向量化
+        2. 投标文件分段并向量化
+        3. 剔除与招标文件高度相似的投标片段
+        4. 投标文件间两两比对，检测相似片段及规避行为
+        5. 统计语法错误，找出多份文件中相同错误
+        支持超时自动终止。
+        """
         start_time = time.time()
         self._log_resource('TASK_START', {'task_id': task_id})
         timeout_flag = {'timeout': False}
@@ -206,6 +260,7 @@ class SimilarityService:
                     batch_vecs = vecs[i:i+batch_size]
                     if tender_vecs.shape[0] > 0 and batch_vecs.shape[0] > 0:
                         sims, _ = self._faiss_max_sim(batch_vecs, tender_vecs)
+                        # 只保留与招标文件相似度低于0.8的片段
                         keep_idx.extend([i+ii for ii, sim in enumerate(sims) if sim < 0.8])
                     else:
                         keep_idx.extend(list(range(i, min(i+batch_size, len(segs)))))
@@ -236,6 +291,7 @@ class SimilarityService:
                             if sim > 0.85:
                                 text1 = segs_i[idx_i]['text']
                                 text2 = segs_j[max_idx]['text']
+                                # 检测规避行为
                                 order_changed = is_order_changed(text1, text2)
                                 stopword_evade = is_stopword_evade(text1, text2, list(self.stopwords))
                                 details.append({
@@ -296,11 +352,17 @@ class SimilarityService:
                 self._process_queue()
 
     def get_result(self, task_id: str) -> Dict[str, Any]:
+        """
+        查询指定任务的结果。
+        """
         if task_id not in self.tasks:
             return {"status": "not_found", "result": None}
         return self.tasks[task_id]
 
     def get_all_tasks(self) -> List[Dict]:
+        """
+        获取所有任务的简要信息列表。
+        """
         return [
             {
                 "task_id": task_id,
@@ -313,6 +375,9 @@ class SimilarityService:
         ]
 
     def cancel_task(self, task_id: str) -> bool:
+        """
+        取消队列中的待处理任务。
+        """
         if task_id in self.tasks and self.tasks[task_id]["status"] == "pending":
             self.tasks[task_id]["status"] = "cancelled"
             # 从队列中移除
@@ -321,6 +386,9 @@ class SimilarityService:
         return False
 
     def cleanup_old_tasks(self, max_age_hours: int = 24):
+        """
+        清理超过指定时长的历史任务。
+        """
         current_time = time.time()
         expired_tasks = [
             task_id for task_id, info in self.tasks.items()

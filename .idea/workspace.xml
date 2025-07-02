@@ -4,9 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="59c83207-ebef-4f38-bb2f-4f17ecbc71cc" name="更改" comment="feat: new_model">
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-    </list>
+    <list default="true" id="59c83207-ebef-4f38-bb2f-4f17ecbc71cc" name="更改" comment="feat: new_model" />
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -24,18 +22,18 @@
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
   </component>
-  <component name="GitHubPullRequestSearchHistory"><![CDATA[{
-  "lastFilter": {
-    "state": "OPEN",
-    "assignee": "ShifanShen"
+  <component name="GitHubPullRequestSearchHistory">{
+  &quot;lastFilter&quot;: {
+    &quot;state&quot;: &quot;OPEN&quot;,
+    &quot;assignee&quot;: &quot;ShifanShen&quot;
   }
-}]]></component>
-  <component name="GithubPullRequestsUISettings"><![CDATA[{
-  "selectedUrlAndAccountId": {
-    "url": "https://github.com/ShifanShen/bidding-docs-similarity.git",
-    "accountId": "1e607195-fac5-41d7-86b6-88677d5d6fd9"
+}</component>
+  <component name="GithubPullRequestsUISettings">{
+  &quot;selectedUrlAndAccountId&quot;: {
+    &quot;url&quot;: &quot;https://github.com/ShifanShen/bidding-docs-similarity.git&quot;,
+    &quot;accountId&quot;: &quot;1e607195-fac5-41d7-86b6-88677d5d6fd9&quot;
   }
-}]]></component>
+}</component>
   <component name="ProjectColorInfo">{
   &quot;associatedIndex&quot;: 5
 }</component>
@@ -94,6 +92,7 @@
       <workItem from="1750939910204" duration="259000" />
       <workItem from="1750952308933" duration="4405000" />
       <workItem from="1751420282341" duration="1674000" />
+      <workItem from="1751445293312" duration="35000" />
     </task>
     <task id="LOCAL-00001" summary="feat: jieba; stopwords; TFIDF">
       <option name="closed" value="true" />
