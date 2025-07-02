@@ -6,10 +6,6 @@
   <component name="ChangeListManager">
     <list default="true" id="59c83207-ebef-4f38-bb2f-4f17ecbc71cc" name="更改" comment="feat: new_model">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app/router/similarity.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/router/similarity.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app/service/similarity_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/service/similarity_service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app/service/text_utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/service/text_utils.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app/static/index.html" beforeDir="false" afterPath="$PROJECT_DIR$/app/static/index.html" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -97,7 +93,7 @@
       <updated>1750939908843</updated>
       <workItem from="1750939910204" duration="259000" />
       <workItem from="1750952308933" duration="4405000" />
-      <workItem from="1751420282341" duration="1218000" />
+      <workItem from="1751420282341" duration="1674000" />
     </task>
     <task id="LOCAL-00001" summary="feat: jieba; stopwords; TFIDF">
       <option name="closed" value="true" />

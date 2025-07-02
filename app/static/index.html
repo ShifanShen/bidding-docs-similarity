@@ -1,46 +1,71 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>投标文件相似度检测系统</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background: #f8f9fa; }
+        .container { max-width: 700px; margin-top: 40px; background: #fff; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); padding: 32px 28px; }
+        .progress { height: 28px; }
+        #results { margin-top: 32px; }
+        .modal-content { border-radius: 10px; }
+        .table th, .table td { vertical-align: middle; }
+    </style>
+</head>
+<body>
 <div class="container">
-    <h1>投标文件相似度检测系统</h1>
-    <div style="text-align:right;margin-bottom:20px;">
-        <button onclick="showTaskManager()" style="background:#27ae60;">任务管理</button>
+    <h2 class="mb-4 text-center">投标文件相似度检测系统</h2>
+    <div class="d-flex justify-content-end mb-3">
+        <button class="btn btn-success" onclick="showTaskManager()">任务管理</button>
     </div>
     <form id="upload-form">
-        <div class="form-group">
-            <label for="tender-file">招标文件（PDF/Word）</label>
-            <input type="file" id="tender-file" name="tender_file" accept=".pdf,.doc,.docx" required>
+        <div class="mb-3">
+            <label for="tender-file" class="form-label">招标文件（PDF/Word）</label>
+            <input class="form-control" type="file" id="tender-file" name="tender_file" accept=".pdf,.doc,.docx" required>
         </div>
-        <div class="form-group">
-            <label for="bid-files">投标文件（可多选，PDF/Word）</label>
-            <input type="file" id="bid-files" name="bid_files" accept=".pdf,.doc,.docx" multiple required>
+        <div class="mb-3">
+            <label for="bid-files" class="form-label">投标文件（可多选，PDF/Word）</label>
+            <input class="form-control" type="file" id="bid-files" name="bid_files" accept=".pdf,.doc,.docx" multiple required>
         </div>
-        <button type="submit" id="analyze-btn">开始分析</button>
+        <button type="submit" class="btn btn-primary w-100" id="analyze-btn">开始分析</button>
     </form>
-    <div class="progress" id="progress"></div>
-    <div class="results" id="results"></div>
-    <div style="text-align:right;margin-top:10px;">
-        <button id="export-btn" style="display:none;">导出结果(JSON)</button>
-        <button id="export-excel-btn" style="display:none;">导出结果(Excel)</button>
-    </div>
-</div>
-
-<!-- 任务管理弹窗 -->
-<div id="task-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:1000;">
-    <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:white;padding:20px;border-radius:8px;max-width:800px;max-height:80vh;overflow-y:auto;">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
-            <h2>任务管理</h2>
-            <button onclick="hideTaskManager()" style="background:#e74c3c;">关闭</button>
+    <div class="my-3">
+        <div class="progress" style="display:none;">
+            <div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%">0%</div>
         </div>
-        <div id="task-list"></div>
+    </div>
+    <div id="results"></div>
+    <div class="d-flex justify-content-end gap-2 mt-3">
+        <button id="export-btn" class="btn btn-outline-secondary" style="display:none;">导出结果(JSON)</button>
+        <button id="export-excel-btn" class="btn btn-outline-success" style="display:none;">导出结果(Excel)</button>
     </div>
 </div>
 
-<script>
-function showTaskManager() {
-    document.getElementById('task-modal').style.display = 'block';
-    loadTasks();
-}
+<!-- 任务管理 Modal -->
+<div class="modal fade" id="taskModal" tabindex="-1" aria-labelledby="taskModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="taskModalLabel">任务管理</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div id="task-list"></div>
+      </div>
+    </div>
+  </div>
+</div>
 
-function hideTaskManager() {
-    document.getElementById('task-modal').style.display = 'none';
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+let lastTaskId = null;
+
+function showTaskManager() {
+    const modal = new bootstrap.Modal(document.getElementById('taskModal'));
+    modal.show();
+    loadTasks();
 }
 
 async function loadTasks() {
@@ -51,7 +76,7 @@ async function loadTasks() {
             displayTasks(data.tasks);
         }
     } catch (e) {
-        console.error('加载任务失败:', e);
+        document.getElementById('task-list').innerHTML = '<div class="text-danger">加载任务失败</div>';
     }
 }
 
@@ -61,33 +86,33 @@ function displayTasks(tasks) {
         taskList.innerHTML = '<p>暂无任务</p>';
         return;
     }
-    let html = '<table border="1" cellpadding="8" style="border-collapse:collapse;width:100%;">';
-    html += '<tr><th>任务ID</th><th>状态</th><th>招标文件</th><th>投标文件数</th><th>创建时间</th><th>操作</th></tr>';
+    let html = '<table class="table table-bordered align-middle">';
+    html += '<thead class="table-light"><tr><th>任务ID</th><th>状态</th><th>招标文件</th><th>投标文件数</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
     for (const task of tasks) {
         const statusColors = {
-            'pending': '#f39c12',
-            'running': '#3498db',
-            'done': '#27ae60',
-            'error': '#e74c3c',
-            'cancelled': '#95a5a6'
+            'pending': 'warning',
+            'running': 'primary',
+            'done': 'success',
+            'error': 'danger',
+            'cancelled': 'secondary'
         };
-        const statusColor = statusColors[task.status] || '#95a5a6';
+        const statusColor = statusColors[task.status] || 'secondary';
         const createdTime = new Date(task.created_time * 1000).toLocaleString();
         html += `<tr>
             <td>${task.task_id.substring(0, 8)}...</td>
-            <td><span style="color:${statusColor};font-weight:bold;">${task.status}</span></td>
+            <td><span class="badge bg-${statusColor}">${task.status}</span></td>
             <td>${task.file_info.tender_file}</td>
             <td>${task.file_info.bid_count}</td>
             <td>${createdTime}</td>
             <td>`;
         if (task.status === 'pending') {
-            html += `<button onclick="cancelTask('${task.task_id}')" style="background:#e74c3c;color:white;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;">取消</button>`;
+            html += `<button onclick="cancelTask('${task.task_id}')" class="btn btn-sm btn-danger">取消</button>`;
         } else if (task.status === 'done') {
-            html += `<button onclick="viewResult('${task.task_id}')" style="background:#3498db;color:white;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;">查看结果</button>`;
+            html += `<button onclick="viewResult('${task.task_id}')" class="btn btn-sm btn-primary">查看结果</button>`;
         }
         html += '</td></tr>';
     }
-    html += '</table>';
+    html += '</tbody></table>';
     taskList.innerHTML = html;
 }
 
@@ -113,7 +138,8 @@ async function viewResult(taskId) {
         const resp = await fetch(`/api/similarity/result?task_id=${taskId}`);
         const data = await resp.json();
         if (data.result && data.result.status === 'done') {
-            hideTaskManager();
+            const modal = bootstrap.Modal.getInstance(document.getElementById('taskModal'));
+            if (modal) modal.hide();
             showResult(data.result.result);
             lastTaskId = taskId;
         } else {
@@ -123,4 +149,158 @@ async function viewResult(taskId) {
         alert('查看结果失败: ' + e.message);
     }
 }
+
+// 进度条、上传、分析、结果展示、导出等功能可按原有逻辑补充完善
+// ...（如需进一步美化交互，可继续扩展）
+
+// ========== 新增：上传与分析主流程 ==========
+document.getElementById('upload-form').onsubmit = async function(e) {
+    e.preventDefault();
+    const tenderFile = document.getElementById('tender-file').files[0];
+    const bidFiles = document.getElementById('bid-files').files;
+    if (!tenderFile || bidFiles.length === 0) {
+        alert('请上传招标文件和至少一个投标文件');
+        return;
+    }
+    // 显示进度条
+    const progressDiv = document.querySelector('.progress');
+    const progressBar = progressDiv.querySelector('.progress-bar');
+    progressDiv.style.display = '';
+    progressBar.style.width = '10%';
+    progressBar.innerText = '上传中...';
+
+    // 1. 上传文件
+    const formData = new FormData();
+    formData.append('tender_file', tenderFile);
+    for (let i = 0; i < bidFiles.length; i++) {
+        formData.append('bid_files', bidFiles[i]);
+    }
+    let uploadResp = await fetch('/api/similarity/upload', {
+        method: 'POST',
+        body: formData
+    });
+    let uploadData = await uploadResp.json();
+    if (!uploadData.tender_file_path || !uploadData.bid_file_paths) {
+        alert('文件上传失败');
+        progressDiv.style.display = 'none';
+        return;
+    }
+    progressBar.style.width = '40%';
+    progressBar.innerText = '分析任务启动中...';
+
+    // 2. 发起分析
+    const analyzeForm = new FormData();
+    analyzeForm.append('tender_file_path', uploadData.tender_file_path);
+    for (const p of uploadData.bid_file_paths) {
+        analyzeForm.append('bid_file_paths', p);
+    }
+    let analyzeResp = await fetch('/api/similarity/analyze', {
+        method: 'POST',
+        body: analyzeForm
+    });
+    let analyzeData = await analyzeResp.json();
+    if (!analyzeData.task_id) {
+        alert('分析任务启动失败');
+        progressDiv.style.display = 'none';
+        return;
+    }
+    progressBar.style.width = '60%';
+    progressBar.innerText = '分析中...';
+
+    // 3. 轮询进度与结果
+    let taskId = analyzeData.task_id;
+    let finished = false;
+    while (!finished) {
+        await new Promise(r => setTimeout(r, 2000));
+        let resultResp = await fetch(`/api/similarity/result?task_id=${taskId}`);
+        let resultData = await resultResp.json();
+        if (resultData.result && resultData.result.status === 'done') {
+            finished = true;
+            progressBar.style.width = '100%';
+            progressBar.innerText = '分析完成';
+            showResult(resultData.result.result);
+            lastTaskId = taskId;
+            document.getElementById('export-btn').style.display = '';
+            document.getElementById('export-excel-btn').style.display = '';
+        } else if (resultData.result && resultData.result.status === 'error') {
+            finished = true;
+            progressBar.style.width = '100%';
+            progressBar.classList.add('bg-danger');
+            progressBar.innerText = '分析失败';
+            alert('分析失败: ' + (resultData.result.result?.error || '未知错误'));
+        } else {
+            // 可选：更新进度条
+            progressBar.style.width = '80%';
+            progressBar.innerText = '分析中...';
+        }
+    }
+};
+
+// ========== 结果展示与导出 ==========
+function showResult(result) {
+    const resultsDiv = document.getElementById('results');
+    if (!result) {
+        resultsDiv.innerHTML = '<div class="text-danger">未获取到分析结果</div>';
+        return;
+    }
+    let html = `<div class="alert alert-success">${result.summary || ''}</div>`;
+    if (result.details && result.details.length > 0) {
+        html += '<h5>雷同片段</h5>';
+        html += '<div style="max-height:300px;overflow:auto;"><table class="table table-sm table-bordered"><thead><tr><th>投标文件</th><th>页码</th><th>雷同文件</th><th>雷同页码</th><th>相似度</th><th>雷同文本</th><th>语法错误</th><th>规避行为</th></tr></thead><tbody>';
+        for (const d of result.details) {
+            let evade = [];
+            if (d.order_changed) evade.push('语序规避');
+            if (d.stopword_evade) evade.push('无意义词插入规避');
+            html += `<tr>
+                <td>${d.bid_file}</td>
+                <td>${d.page}</td>
+                <td>${d.similar_with}</td>
+                <td>${d.similar_page}</td>
+                <td>${d.similarity}</td>
+                <td style="max-width:200px;word-break:break-all;">${d.text}</td>
+                <td>${(d.grammar_errors||[]).join('<br>')}</td>
+                <td>${evade.join(',')}</td>
+            </tr>`;
+        }
+        html += '</tbody></table></div>';
+    }
+    if (result.grammar_errors && result.grammar_errors.length > 0) {
+        html += '<h5 class="mt-4">相同语法错误</h5>';
+        html += '<div style="max-height:200px;overflow:auto;"><table class="table table-sm table-bordered"><thead><tr><th>语法错误</th><th>片段内容</th><th>出现位置</th></tr></thead><tbody>';
+        for (const g of result.grammar_errors) {
+            let locs = (g.locations||[]).map(l=>`${l.bid_file} 第${l.page}页`).join('<br>');
+            html += `<tr>
+                <td>${g.error}</td>
+                <td style="max-width:200px;word-break:break-all;">${g.text}</td>
+                <td>${locs}</td>
+            </tr>`;
+        }
+        html += '</tbody></table></div>';
+    }
+    resultsDiv.innerHTML = html;
+}
+
+// ========== 导出功能 ==========
+document.getElementById('export-btn').onclick = function() {
+    if (!lastTaskId) return;
+    fetch(`/api/similarity/result?task_id=${lastTaskId}`)
+        .then(resp => resp.json())
+        .then(data => {
+            if (data.result && data.result.result) {
+                const blob = new Blob([JSON.stringify(data.result.result, null, 2)], {type: 'application/json'});
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `similarity_result_${lastTaskId}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+            }
+        });
+};
+document.getElementById('export-excel-btn').onclick = function() {
+    if (!lastTaskId) return;
+    window.open(`/api/similarity/export_excel?task_id=${lastTaskId}`);
+};
 </script>
+</body>
+</html>
