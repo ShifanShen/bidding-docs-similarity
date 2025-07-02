@@ -1,0 +1,126 @@
+<div class="container">
+    <h1>投标文件相似度检测系统</h1>
+    <div style="text-align:right;margin-bottom:20px;">
+        <button onclick="showTaskManager()" style="background:#27ae60;">任务管理</button>
+    </div>
+    <form id="upload-form">
+        <div class="form-group">
+            <label for="tender-file">招标文件（PDF/Word）</label>
+            <input type="file" id="tender-file" name="tender_file" accept=".pdf,.doc,.docx" required>
+        </div>
+        <div class="form-group">
+            <label for="bid-files">投标文件（可多选，PDF/Word）</label>
+            <input type="file" id="bid-files" name="bid_files" accept=".pdf,.doc,.docx" multiple required>
+        </div>
+        <button type="submit" id="analyze-btn">开始分析</button>
+    </form>
+    <div class="progress" id="progress"></div>
+    <div class="results" id="results"></div>
+    <div style="text-align:right;margin-top:10px;">
+        <button id="export-btn" style="display:none;">导出结果(JSON)</button>
+        <button id="export-excel-btn" style="display:none;">导出结果(Excel)</button>
+    </div>
+</div>
+
+<!-- 任务管理弹窗 -->
+<div id="task-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:1000;">
+    <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:white;padding:20px;border-radius:8px;max-width:800px;max-height:80vh;overflow-y:auto;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+            <h2>任务管理</h2>
+            <button onclick="hideTaskManager()" style="background:#e74c3c;">关闭</button>
+        </div>
+        <div id="task-list"></div>
+    </div>
+</div>
+
+<script>
+function showTaskManager() {
+    document.getElementById('task-modal').style.display = 'block';
+    loadTasks();
+}
+
+function hideTaskManager() {
+    document.getElementById('task-modal').style.display = 'none';
+}
+
+async function loadTasks() {
+    try {
+        const resp = await fetch('/api/similarity/tasks');
+        const data = await resp.json();
+        if (data.tasks) {
+            displayTasks(data.tasks);
+        }
+    } catch (e) {
+        console.error('加载任务失败:', e);
+    }
+}
+
+function displayTasks(tasks) {
+    const taskList = document.getElementById('task-list');
+    if (tasks.length === 0) {
+        taskList.innerHTML = '<p>暂无任务</p>';
+        return;
+    }
+    let html = '<table border="1" cellpadding="8" style="border-collapse:collapse;width:100%;">';
+    html += '<tr><th>任务ID</th><th>状态</th><th>招标文件</th><th>投标文件数</th><th>创建时间</th><th>操作</th></tr>';
+    for (const task of tasks) {
+        const statusColors = {
+            'pending': '#f39c12',
+            'running': '#3498db',
+            'done': '#27ae60',
+            'error': '#e74c3c',
+            'cancelled': '#95a5a6'
+        };
+        const statusColor = statusColors[task.status] || '#95a5a6';
+        const createdTime = new Date(task.created_time * 1000).toLocaleString();
+        html += `<tr>
+            <td>${task.task_id.substring(0, 8)}...</td>
+            <td><span style="color:${statusColor};font-weight:bold;">${task.status}</span></td>
+            <td>${task.file_info.tender_file}</td>
+            <td>${task.file_info.bid_count}</td>
+            <td>${createdTime}</td>
+            <td>`;
+        if (task.status === 'pending') {
+            html += `<button onclick="cancelTask('${task.task_id}')" style="background:#e74c3c;color:white;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;">取消</button>`;
+        } else if (task.status === 'done') {
+            html += `<button onclick="viewResult('${task.task_id}')" style="background:#3498db;color:white;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;">查看结果</button>`;
+        }
+        html += '</td></tr>';
+    }
+    html += '</table>';
+    taskList.innerHTML = html;
+}
+
+async function cancelTask(taskId) {
+    if (!confirm('确定要取消这个任务吗？')) return;
+    try {
+        const formData = new FormData();
+        formData.append('task_id', taskId);
+        const resp = await fetch('/api/similarity/cancel_task', {
+            method: 'POST',
+            body: formData
+        });
+        const data = await resp.json();
+        alert(data.msg);
+        loadTasks();
+    } catch (e) {
+        alert('取消失败: ' + e.message);
+    }
+}
+
+async function viewResult(taskId) {
+    try {
+        const resp = await fetch(`/api/similarity/result?task_id=${taskId}`);
+        const data = await resp.json();
+        if (data.result && data.result.status === 'done') {
+            hideTaskManager();
+            showResult(data.result.result);
+            lastTaskId = taskId;
+        } else {
+            alert('任务未完成或结果不存在');
+        }
+    } catch (e) {
+        alert('查看结果失败: ' + e.message);
+    }
+}
+</script>

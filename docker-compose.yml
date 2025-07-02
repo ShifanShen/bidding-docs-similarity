@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  bidding-similarity:
+    build: .
+    container_name: bidding-similarity-app
+    ports:
+      - "8000:8000"
+    volumes:
+      # 挂载本地模型目录
+      - ./local_text2vec_model:/app/local_text2vec_model:ro
+      # 挂载停用词文件
+      - ./stopwords.txt:/app/stopwords.txt:ro
+      # 挂载临时文件目录（持久化）
+      - ./tmp_files:/app/tmp_files
+    environment:
+      - PYTHONPATH=/app
+    restart: unless-stopped
