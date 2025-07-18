@@ -7,6 +7,14 @@ import os
 
 app = FastAPI(title="Bidding Docs Similarity System")
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 允许所有来源请求（可以根据需求修改为指定域名列表）
+    allow_credentials=True,
+    allow_methods=["*"],  # 允许所有请求方法（POST, GET, PUT, DELETE等）
+    allow_headers=["*"],  # 允许所有请求头
+)
+
 # 挂载静态文件（前端页面）
 static_dir = os.path.join(os.path.dirname(__file__), 'static')
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
