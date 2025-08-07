@@ -19,16 +19,41 @@ def extract_text_from_docx(docx_path: str) -> List[str]:
     return [para.text for para in doc.paragraphs if para.text.strip()]
 
 def split_text_to_segments(text: str) -> List[str]:
-    """将长文本分割为段落或句子（按换行或句号）"""
-    # 先按换行分段，再按句号分句
+    """将长文本分割为段落，保持上下文完整性"""
+    # 先按换行分段
     segments = []
+    current_segment = ""
+    min_segment_length = 100  # 最小段落长度阈值
+    max_segment_length = 500  # 最大段落长度阈值
+
     for para in text.splitlines():
         para = para.strip()
         if not para:
             continue
-        # 按中文/英文句号分句
-        segs = re.split(r'[。.!?]', para)
-        segments.extend([s.strip() for s in segs if s.strip()])
+
+        # 如果当前段落已经很长，直接添加
+        if len(para) > max_segment_length:
+            if current_segment:
+                segments.append(current_segment)
+                current_segment = ""
+            segments.append(para)
+            continue
+
+        # 合并到当前段落
+        if current_segment:
+            current_segment += " " + para
+        else:
+            current_segment = para
+
+        # 如果当前段落达到最小长度，添加到结果
+        if len(current_segment) >= min_segment_length:
+            segments.append(current_segment)
+            current_segment = ""
+
+    # 添加最后一个段落（如果有）
+    if current_segment:
+        segments.append(current_segment)
+
     return segments
 
 def remove_stopwords(text: str, stopwords: List[str]) -> str:

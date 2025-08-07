@@ -288,7 +288,9 @@ class SimilarityService:
                         sims, idxs = self._faiss_max_sim(batch_vecs, vecs_j)
                         for idx_b, (sim, max_idx) in enumerate(zip(sims, idxs)):
                             idx_i = k + idx_b
-                            if sim > 0.85:
+                            # 在_analyze_task方法中
+                            if sim > 0.9:  # 提高阈值从0.85到0.9
+                            # 处理相似片段的逻辑
                                 text1 = segs_i[idx_i]['text']
                                 text2 = segs_j[max_idx]['text']
                                 # 检测规避行为

@@ -1,3 +1,6 @@
 tmp_files/
 local_text2vec_model/
 /.idea
+tender_docs/
+uploads/
+documents/
