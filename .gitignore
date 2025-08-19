@@ -2,25 +2,10 @@
 tmp_files/
 __pycache__/
 *.pyc
-
-# 依赖和环境
 .venv/
-
-# 大型二进制文件和模型
 local_text2vec_model/
-
-# 敏感或非源代码文件
 uploads/
 tender_docs/
 bidding_docs/
-
-# 构建和部署产物
-Dockerfile*
-.dockerignore
-docker-compose.yml
-
-# 其他项目级忽略
-stopwords.txt
-requirements.txt
 /uv.lock
 /bidding_docs/
