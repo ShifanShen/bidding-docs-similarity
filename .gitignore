@@ -4,8 +4,6 @@ __pycache__/
 *.pyc
 .venv/
 local_text2vec_model/
-uploads/
-tender_docs/
-bidding_docs/
 /uv.lock
 /bidding_docs/
+/upload_files/

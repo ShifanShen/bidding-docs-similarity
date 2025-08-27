@@ -1,9 +1,10 @@
 from typing import List, Dict, Any
 import re
-
-import pdfplumber
-
 import docx
+import pdfplumber
+from typing import List, Dict, Any
+from app.config.similarity_config import default_config
+from app.config.synonyms_config import SYNONYMS
 
 def extract_text_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
     """从PDF文件中按页提取文本和表格，返回每页内容列表"""
@@ -48,8 +49,8 @@ def split_text_to_segments(text: str) -> List[str]:
     # 先按换行分段
     segments = []
     current_segment = ""
-    min_segment_length = 100  # 最小段落长度阈值
-    max_segment_length = 500  # 最大段落长度阈值
+    min_segment_length = default_config.MIN_SEGMENT_LENGTH  # 最小段落长度阈值
+    max_segment_length = default_config.MAX_SEGMENT_LENGTH  # 最大段落长度阈值
 
     for para in text.splitlines():
         para = para.strip()
@@ -106,65 +107,18 @@ def is_stopword_evade(text1: str, text2: str, stopwords: List[str]) -> bool:
     filtered2 = [char for char in text2 if char not in stopwords]
     return set(filtered1) == set(filtered2) and text1 != text2
 
+def remove_numbers(text: str) -> str:
+    """移除文本中的所有数字，保留其他字符"""
+    # 使用正则表达式替换所有数字为''
+    return re.sub(r'[0-9]+', '', text)
+
 def is_synonym_evade(text1: str, text2: str) -> bool:
     """判断两个文本是否通过替换同义词来规避相似度检测"""
-    # 常见中文同义词对表（可扩展）
-    synonyms = {
-        '仔细': ['详细', '认真', '细致'],
-        '研究': ['研读', '钻研', '探讨'],
-        '愿意': ['情愿', '乐意', '甘于'],
-        '人民币': ['元', 'RMB', '人民币'],
-        '大写': ['全称', '中文大写'],
-        '项目': ['工程', '项目工程'],
-        '招标': ['采购', '招标采购'],
-        '投标': ['竞标', '应标'],
-        '承诺': ['保证', '应允'],
-        '遵循': ['遵守', '依照'],
-        '公开': ['透明', '公开透明'],
-        '公平': ['公正', '平等'],
-        '诚实': ['诚信', '忠实'],
-        '信用': ['信誉', '诚信'],
-        '提供': ['供给', '提交'],
-        '真实': ['确实', '实在'],
-        '有效': ['有用', '生效'],
-        '合法': ['合规', '法律允许'],
-        '责任': ['职责', '义务'],
-        '出借': ['出租', '借出'],
-        '转让': ['转移', '让渡'],
-        '资质': ['资格', '资质证书'],
-        '证书': ['证明', '证件'],
-        '挂靠': ['挂名', '依附'],
-        '名义': ['名义上', '名称'],
-        '弄虚': ['造假', '虚构'],
-        '作假': ['造假', '作弊'],
-        '骗取': ['骗得', '诈取'],
-        '中标': ['得标', '中标结果'],
-        '串通': ['勾结', '串通一气'],
-        '报价': ['出价', '报价单'],
-        '排挤': ['排斥', '排除'],
-        '公平竞争': ['正当竞争', '公平角逐'],
-        '损害': ['侵害', '损坏'],
-        '合法权益': ['正当权益', '合法权利'],
-        '代理': ['代办', '代理机构'],
-        '机构': ['单位', '组织'],
-        '国家利益': ['国家权益', '国家益处'],
-        '社会公共利益': ['公共利益', '社会利益'],
-        '行贿': ['贿赂', '送礼'],
-        '牟取': ['谋取', '获取'],
-        '截止': ['结束', '终止'],
-        '撤销': ['撤回', '取消'],
-        '文件': ['文档', '材料'],
-        '中标通知书': ['中标通知', '中标函'],
-        '严格': ['严厉', '严谨'],
-        '规定': ['规则', '规范'],
-        '时间': ['时限', '期间'],
-        '签订': ['签定', '订立'],
-        '合同': ['合约', '协议']
-    }
+    # 从配置文件导入同义词表
     
     # 构建反向同义词映射
     reverse_synonyms = {}
-    for key, syn_list in synonyms.items():
+    for key, syn_list in SYNONYMS.items():
         for syn in syn_list:
             if syn not in reverse_synonyms:
                 reverse_synonyms[syn] = []
@@ -179,8 +133,8 @@ def is_synonym_evade(text1: str, text2: str) -> bool:
     tokens1 = simple_tokenize(text1)
     tokens2 = simple_tokenize(text2)
     
-    # 如果词数差异超过20%，不认为是同义词替换
-    if abs(len(tokens1) - len(tokens2)) / max(len(tokens1), len(tokens2)) > 0.2:
+    # 如果词数差异超过阈值，不认为是同义词替换
+    if abs(len(tokens1) - len(tokens2)) / max(len(tokens1), len(tokens2)) > default_config.SYNONYM_TOKEN_COUNT_DIFF_THRESHOLD:
         return False
     
     # 检查同义词替换
@@ -194,9 +148,9 @@ def is_synonym_evade(text1: str, text2: str) -> bool:
         
         # 检查是否是同义词
         is_syn = False
-        if token1 in synonyms and token2 in synonyms[token1]:
+        if token1 in SYNONYMS and token2 in SYNONYMS[token1]:
             is_syn = True
-        elif token2 in synonyms and token1 in synonyms[token2]:
+        elif token2 in SYNONYMS and token1 in SYNONYMS[token2]:
             is_syn = True
         elif token1 in reverse_synonyms and token2 in reverse_synonyms[token1]:
             is_syn = True
