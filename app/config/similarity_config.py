@@ -19,8 +19,8 @@ class SimilarityConfig:
     # 相似度阈值
     TENDER_SIMILARITY_THRESHOLD = 0.6  # 与招标文件相似度的剔除阈值
     BID_SIMILARITY_THRESHOLD = 0.9  # 投标文件间相似度的检测阈值
-    TABLE_ROW_THRESHOLD_OFFSET = 0.05  # 表格行相似度阈值偏移量
-    TABLE_CELL_THRESHOLD_OFFSET = 0.05  # 表格单元格相似度阈值偏移量
+    TABLE_ROW_THRESHOLD_OFFSET = 0.025  # 表格行相似度阈值偏移量
+    TABLE_CELL_THRESHOLD_OFFSET = 0.025  # 表格单元格相似度阈值偏移量
     HIGH_SIMILARITY_THRESHOLD = 0.99  # 高相似度阈值
     VERY_HIGH_SIMILARITY_THRESHOLD = 0.995  # 极高相似度阈值
     

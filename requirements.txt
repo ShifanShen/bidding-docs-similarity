@@ -9,3 +9,9 @@ numpy
 language_tool_python
 openpyxl
 faiss-cpu
+paddleocr
+pymupdf
+pillow
+camelot-py[cv]
+opencv-python
+pytesseract
