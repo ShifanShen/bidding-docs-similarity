@@ -2,7 +2,6 @@ from typing import List, Dict, Any
 import re
 import docx
 import pdfplumber
-from typing import List, Dict, Any
 from app.config.similarity_config import default_config
 from app.config.synonyms_config import SYNONYMS
 from app.service.paddle_ocr_service import ocr_service as paddle_ocr_service

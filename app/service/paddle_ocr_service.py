@@ -15,7 +15,7 @@ class PaddleOCRService:
     
     def __init__(self):
         self._is_initialized = False
-        self._pipeline = None
+        self._ocr = None
         self._initialize_ocr()
     
     def _initialize_ocr(self):
@@ -23,11 +23,13 @@ class PaddleOCRService:
         try:
             logger.info("开始初始化PaddleOCR引擎...")
             
-            # 创建PaddleOCR实例
-            self._pipeline = PaddleOCR(
-                use_angle_cls=default_paddle_ocr_config.USE_ANGLE_CLS,
-                lang=default_paddle_ocr_config.LANG,
-                device=default_paddle_ocr_config.DEVICE
+            # 创建PaddleOCR实例，使用您配置的模型
+            self._ocr = PaddleOCR(
+                text_detection_model_name=default_paddle_ocr_config.TEXT_DETECTION_MODEL_NAME,
+                text_recognition_model_name=default_paddle_ocr_config.TEXT_RECOGNITION_MODEL_NAME,
+                use_doc_orientation_classify=default_paddle_ocr_config.USE_DOC_ORIENTATION_CLASSIFY,
+                use_doc_unwarping=default_paddle_ocr_config.USE_DOC_UNWARPING,
+                use_textline_orientation=default_paddle_ocr_config.USE_TEXTLINE_ORIENTATION
             )
             
             logger.info("PaddleOCR引擎初始化成功")
@@ -77,64 +79,68 @@ class PaddleOCRService:
     def _process_paddle_ocr_result(self, ocr_result) -> str:
         """处理PaddleOCR识别结果，提取文本内容"""
         try:
-            if not ocr_result or len(ocr_result) == 0:
+            if not ocr_result:
+                logger.debug("OCR结果为空")
                 return ""
+            
+            logger.debug(f"OCR结果类型: {type(ocr_result)}")
             
             # 从PaddleOCR结果中提取文本
             text_lines = []
-            for line in ocr_result:
-                if line and len(line) >= 2:
-                    # PaddleOCR结果格式: [[[x1,y1],[x2,y2],[x3,y3],[x4,y4]], (text, confidence)]
-                    text_content = line[1][0] if line[1] else ""
-                    confidence = line[1][1] if line[1] and len(line[1]) > 1 else 0.0
+            
+            # 遍历所有结果
+            for result in ocr_result:
+                # 从OCRResult对象中获取JSON数据
+                if hasattr(result, 'json'):
+                    json_data = result.json
+                    logger.debug(f"JSON数据键: {list(json_data.keys())}")
                     
-                    # 只保留置信度高于阈值的文本
-                    if confidence >= default_paddle_ocr_config.MIN_CONFIDENCE and text_content.strip():
-                        text_lines.append(text_content.strip())
+                    # 从JSON数据中提取文本
+                    if 'rec_texts' in json_data and json_data['rec_texts']:
+                        rec_texts = json_data['rec_texts']
+                        rec_scores = json_data.get('rec_scores', [])
+                        
+                        logger.debug(f"rec_texts数量: {len(rec_texts)}")
+                        logger.debug(f"rec_scores数量: {len(rec_scores)}")
+                        
+                        # 确保文本和分数数量一致
+                        min_length = min(len(rec_texts), len(rec_scores)) if rec_scores else len(rec_texts)
+                        
+                        for i in range(min_length):
+                            text_content = rec_texts[i] if i < len(rec_texts) else ""
+                            confidence = rec_scores[i] if i < len(rec_scores) else 1.0  # 如果没有分数，默认置信度为1.0
+                            
+                            logger.debug(f"文本 {i}: '{text_content}', 置信度: {confidence:.3f}")
+                            
+                            # 只保留置信度高于阈值的文本
+                            if confidence >= default_paddle_ocr_config.MIN_CONFIDENCE and text_content.strip():
+                                text_lines.append(text_content.strip())
+                    else:
+                        logger.debug("JSON数据中没有rec_texts或为空")
             
             # 合并所有文本行
             full_text = '\n'.join(text_lines)
+            logger.debug(f"提取到文本行数: {len(text_lines)}")
+            logger.debug(f"合并文本长度: {len(full_text)}")
             
-            # 清理文本中的多余空格，特别是中文字符之间的空格
+            # 清理文本中的多余空格
             if full_text:
                 import re
                 
-                # 1. 首先处理所有行，去除首尾空格
+                # 去除行首尾空格并移除空行
                 lines = [line.strip() for line in full_text.split('\n') if line.strip()]
                 
-                # 2. 将所有行合并成一个文本进行整体处理
+                # 去除中文字符之间的空格
                 merged_text = ' '.join(lines)
-                
-                # 3. 去除中文字符之间的空格
                 merged_text = re.sub(r'([\u4e00-\u9fff])\s+([\u4e00-\u9fff])', r'\1\2', merged_text)
                 
-                # 4. 去除中文与数字/字母之间的空格
-                merged_text = re.sub(r'([\u4e00-\u9fff])\s+([0-9a-zA-Z])', r'\1\2', merged_text)
-                merged_text = re.sub(r'([0-9a-zA-Z])\s+([\u4e00-\u9fff])', r'\1\2', merged_text)
-                
-                # 5. 去除数字与标点符号之间的空格
-                merged_text = re.sub(r'([0-9])\s+([，。！？；：])', r'\1\2', merged_text)
-                merged_text = re.sub(r'([，。！？；：])\s+([0-9])', r'\1\2', merged_text)
-                
-                # 6. 修复冒号前的空格（包括英文和中文冒号）
-                merged_text = re.sub(r'\s+(:|：)', r'\1', merged_text)
-                
-                # 7. 修复中文标点符号前的空格
-                merged_text = re.sub(r'\s+([，。！？；：])', r'\1', merged_text)
-                
-                # 8. 修复中文标点符号后的多余空格
-                merged_text = re.sub(r'([，。！？；：])\s+', r'\1', merged_text)
-                
-                # 9. 处理连续的多个空格，保留单个空格
+                # 处理连续的多个空格，保留单个空格
                 merged_text = re.sub(r'\s+', ' ', merged_text)
                 
-                # 10. 在中文句号、问号、感叹号后添加换行，以分割句子
+                # 在中文句号、问号、感叹号后添加换行
                 merged_text = re.sub(r'([。！？])', r'\1\n', merged_text)
                 
-                # 11. 处理"+"等特殊符号周围的空格
-                merged_text = re.sub(r'\s*\+\s*', '+', merged_text)
-                
-                # 12. 再次去除行首尾空格并移除空行
+                # 再次去除行首尾空格并移除空行
                 formatted_lines = [line.strip() for line in merged_text.split('\n') if line.strip()]
                 full_text = '\n'.join(formatted_lines)
                 logger.debug("已清理文本中的多余空格")
@@ -147,21 +153,15 @@ class PaddleOCRService:
     
     def recognize_text(self, pdf_path: str, page_num: int) -> Dict[str, Any]:
         """识别PDF页面中的文本，使用PaddleOCR"""
-        temp_image_path = None
         try:
             logger.info(f"开始OCR文本识别: 文件={os.path.basename(pdf_path)}, 页码={page_num}")
             
             img_array = self._pdf_page_to_image(pdf_path, page_num)
             
-            # 保存临时图像文件供PaddleOCR处理
-            temp_image_path = f"temp_ocr_{page_num}.png"
-            temp_img = Image.fromarray(img_array)
-            temp_img.save(temp_image_path)
-            
             # 调用PaddleOCR进行文本识别
             logger.info(f"调用PaddleOCR进行文本识别: 文件={os.path.basename(pdf_path)}, 页码={page_num}")
             
-            ocr_result = self._pipeline.predict(temp_image_path)
+            ocr_result = self._ocr.ocr(img_array)
             
             # 处理识别结果
             text = self._process_paddle_ocr_result(ocr_result)
@@ -185,44 +185,19 @@ class PaddleOCRService:
                 'text': "",
                 'tables': []
             }
-        finally:
-            # 清理临时文件
-            if temp_image_path and os.path.exists(temp_image_path):
-                try:
-                    os.remove(temp_image_path)
-                except Exception as e:
-                    logger.warning(f"清理临时文件失败: {str(e)}")
     
     def process_page_with_ocr_fallback(self, pdf_path: str, page_num: int, page_data: Dict[str, Any]) -> Dict[str, Any]:
         """当pdfplumber提取的文本不足时，使用OCR作为后备方案"""
-        logger.info(f"开始OCR后备处理: 文件={os.path.basename(pdf_path)}, 页码={page_num}")
-        
-        # 检查当前页面文本长度是否低于阈值
-        current_text_length = len(page_data.get('text', ''))
-        tables_count = len(page_data.get('tables', []))
-        
-        logger.debug(f"当前页面状态: 文本长度={current_text_length}, 表格数量={tables_count}, OCR阈值={default_paddle_ocr_config.OCR_THRESHOLD}")
+        current_text_length = len(page_data.get('text', '').strip())
         
         if current_text_length < default_paddle_ocr_config.OCR_THRESHOLD:
-            logger.info(f"页面 {page_num} 文本长度 {current_text_length} 低于阈值 {default_paddle_ocr_config.OCR_THRESHOLD}，触发OCR识别")
-            
-            # 调用OCR识别
+            logger.info(f"页面 {page_num} 文本长度不足，触发OCR识别")
             ocr_result = self.recognize_text(pdf_path, page_num)
             
-            # 更新文本和表格数据
             if ocr_result.get('text'):
-                logger.info(f"OCR识别成功，更新页面文本: 原长度={current_text_length}, 新长度={len(ocr_result['text'])}")
                 page_data['text'] = ocr_result['text']
-            else:
-                logger.warning(f"OCR未能识别到有效文本: 文件={os.path.basename(pdf_path)}, 页码={page_num}")
-            
-            if ocr_result.get('tables'):
-                logger.info(f"OCR识别成功，更新页面表格: 原数量={tables_count}, 新数量={len(ocr_result['tables'])}")
-                page_data['tables'] = ocr_result['tables']
-        else:
-            logger.info(f"页面 {page_num} 文本长度 {current_text_length} 满足要求，无需OCR识别")
+                logger.info(f"OCR识别成功，文本长度: {len(ocr_result['text'])}")
         
-        logger.debug(f"OCR后备处理完成: 文件={os.path.basename(pdf_path)}, 页码={page_num}")
         return page_data
 
 # 创建全局OCR服务实例

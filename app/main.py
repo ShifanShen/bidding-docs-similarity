@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
-from app.router import similarity
+from app.router import similarity, ocr
 from app.config.log_config import log_config
 import os
 
@@ -23,8 +23,9 @@ app.add_middleware(
 static_dir = os.path.join(os.path.dirname(__file__), 'static')
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
-# 挂载 similarity 路由
+# 挂载路由
 app.include_router(similarity.router)
+app.include_router(ocr.router)
 
 # 首页路由，返回前端页面
 @app.get("/")
@@ -33,4 +34,4 @@ def root():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8020, reload=True)
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
