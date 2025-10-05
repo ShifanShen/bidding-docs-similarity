@@ -2,6 +2,7 @@ import os
 import threading
 import uuid
 import time
+import json
 from typing import List, Dict, Any, Optional, Tuple, Set
 from threading import Thread, Lock, Timer
 import numpy as np
@@ -25,9 +26,11 @@ import psutil
 from app.config.similarity_config import default_config
 from app.config.terms_config import COMMON_TERMS
 
-# 配置日志格式
-logging.basicConfig(level=getattr(logging, default_config.LOG_LEVEL), 
-                    format='%(asctime)s %(levelname)s %(message)s')
+# 初始化提取文本保存目录
+EXTRACTED_TEXTS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../extracted_texts'))
+os.makedirs(EXTRACTED_TEXTS_DIR, exist_ok=True)
+
+logger = logging.getLogger(__name__)
 
 # =============================
 # 相似度分析服务主类
@@ -322,6 +325,61 @@ class SimilarityService:
                 torch.cuda.empty_cache()
             self.cleanup_counter = 0
 
+    def _save_extracted_texts(self, task_id: str, tender_file_path: str, tender_segments: List[Dict[str, Any]],
+                              bid_file_paths: List[str], bid_segments_list: List[List[Dict[str, Any]]]) -> None:
+        """
+        保存任务中提取的所有文本到extracted_texts目录
+        """
+        try:
+            # 准备要保存的数据
+            extracted_data = {
+                "task_id": task_id,
+                "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
+                "tender_file": os.path.basename(tender_file_path),
+                "tender_texts": [],
+                "bid_files": []
+            }
+            
+            # 添加招标文件提取的文本
+            for seg in tender_segments:
+                extracted_data["tender_texts"].append({
+                    "page": seg["page"],
+                    "text": seg["text"],
+                    "is_table_cell": seg["is_table_cell"]
+                })
+            
+            # 添加每个投标文件提取的文本
+            for i, bid_path in enumerate(bid_file_paths):
+                bid_data = {
+                    "file_name": os.path.basename(bid_path),
+                    "texts": []
+                }
+                
+                if i < len(bid_segments_list):
+                    for seg in bid_segments_list[i]:
+                        bid_data["texts"].append({
+                            "page": seg["page"],
+                            "text": seg["text"],
+                            "is_table_cell": seg["is_table_cell"]
+                        })
+                
+                extracted_data["bid_files"].append(bid_data)
+            
+            # 生成文件名：包含任务ID和时间戳
+            timestamp = time.strftime('%Y%m%d_%H%M%S')
+            tender_filename = os.path.splitext(os.path.basename(tender_file_path))[0]
+            safe_filename = tender_filename.replace('..', '_').replace('/', '_').replace('\\', '_')
+            filename = f"{safe_filename}_{task_id}_{timestamp}.json"
+            file_path = os.path.join(EXTRACTED_TEXTS_DIR, filename)
+            
+            # 保存为JSON文件
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(extracted_data, f, ensure_ascii=False, indent=2)
+            
+            logger.info(f"提取的文本已保存: {file_path}")
+        except Exception as e:
+            logger.error(f"保存提取的文本失败: {str(e)}")
+            
     def _log_resource(self, tag: str, extra: Optional[dict] = None) -> None:
         """
         记录当前进程的内存和 CPU 占用，便于监控。
@@ -332,7 +390,7 @@ class SimilarityService:
         log_msg = f"[{tag}] mem={mem:.1f}MB cpu={cpu:.1f}%"
         if extra:
             log_msg += f" | {extra}"
-        logging.info(log_msg)
+        logger.info(log_msg)
 
     def _analyze_task(self, task_id: str, tender_file_path: str, bid_file_paths: List[str]) -> None:
         """
@@ -369,6 +427,9 @@ class SimilarityService:
             
             # 2. 处理投标文件
             bid_segments_list, bid_vecs_list = self._process_bid_documents(bid_file_paths)
+            
+            # 保存提取的文本
+            self._save_extracted_texts(task_id, tender_file_path, tender_segments, bid_file_paths, bid_segments_list)
             
             # 3. 剔除与招标文件高度相似的投标片段
             filtered_bid_segments, filtered_bid_vecs = self._filter_bid_segments(

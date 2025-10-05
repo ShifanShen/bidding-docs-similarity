@@ -8,7 +8,6 @@ __pycache__
 *.pyo
 *.pyd
 .Python
-env
 pip-log.txt
 pip-delete-this-directory.txt
 .tox
@@ -19,7 +18,6 @@ nosetests.xml
 coverage.xml
 *.cover
 *.log
-.git
 .mypy_cache
 .pytest_cache
 .hypothesis
@@ -31,6 +29,48 @@ env/
 venv/
 ENV/
 env.bak/
+
+# Data and temporary directories
+documents/
+tmp_files/
+upload_files/
+local_text2vec_model/
+ocr_result_test.txt
+SY-商务部分.pdf
+
+# Test files
+test_*.py
+
+# Build files
+docker-compose.yml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Package files
+*.egg-info/
+build/
+dist/
+
+# Log files
+*.log
+logs/
+
+# Environment variables
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
 venv.bak/
 
 # IDE

@@ -5,7 +5,7 @@ import pdfplumber
 from typing import List, Dict, Any
 from app.config.similarity_config import default_config
 from app.config.synonyms_config import SYNONYMS
-from app.service.tesseract_ocr_service import ocr_service
+from app.service.paddle_ocr_service import ocr_service as paddle_ocr_service
 
 def extract_text_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
     """从PDF文件中按页提取文本和表格，返回每页内容列表"""
@@ -38,9 +38,9 @@ def extract_text_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
                         page_data['tables'].append(table_data)
             
             # 当pdfplumber提取的文本长度低于阈值时，触发OCR识别
-            if ocr_service.is_available():
+            if paddle_ocr_service.is_available():
                 try:
-                    page_data = ocr_service.process_page_with_ocr_fallback(pdf_path, page.page_number, page_data)
+                    page_data = paddle_ocr_service.process_page_with_ocr_fallback(pdf_path, page.page_number, page_data)
                 except Exception as e:
                     # 记录OCR错误但继续使用pdfplumber的结果
                     import logging

@@ -3,7 +3,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 from app.router import similarity
+from app.config.log_config import log_config
 import os
+
+# 初始化日志配置
+log_config.setup_logging()
 
 app = FastAPI(title="Bidding Docs Similarity System")
 
@@ -29,4 +33,4 @@ def root():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8020, reload=True)

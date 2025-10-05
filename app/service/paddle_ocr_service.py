@@ -4,48 +4,47 @@ import os
 import fitz  # pymupdf
 from PIL import Image
 import numpy as np
-import camelot
-import pytesseract
+from paddleocr import PaddleOCR
 from typing import List, Dict, Any
-from app.config.tesseract_ocr_config import default_tesseract_config
+from app.config.paddle_ocr_config import default_paddle_ocr_config
 
 logger = logging.getLogger(__name__)
 
-class TesseractOCRService:
-    """Tesseract OCR文本识别服务"""
+class PaddleOCRService:
+    """PaddleOCR文本识别服务"""
     
     def __init__(self):
         self._is_initialized = False
+        self._pipeline = None
         self._initialize_ocr()
     
     def _initialize_ocr(self):
-        """初始化Tesseract OCR引擎"""
+        """初始化PaddleOCR引擎"""
         try:
-            logger.info("开始初始化Tesseract OCR引擎...")
+            logger.info("开始初始化PaddleOCR引擎...")
             
-            # 检查Tesseract是否可用
-            try:
-                # 获取Tesseract版本信息以验证安装
-                version = pytesseract.get_tesseract_version()
-                logger.info(f"Tesseract OCR引擎初始化成功，版本: {version}")
-                self._is_initialized = True
-            except Exception as e:
-                logger.error(f"无法获取Tesseract版本信息: {str(e)}")
-                logger.warning("Tesseract可能未正确安装或不在系统PATH中")
-                # 尝试继续，让后续错误更明确
-                self._is_initialized = False
+            # 创建PaddleOCR实例
+            self._pipeline = PaddleOCR(
+                use_angle_cls=default_paddle_ocr_config.USE_ANGLE_CLS,
+                lang=default_paddle_ocr_config.LANG,
+                device=default_paddle_ocr_config.DEVICE
+            )
+            
+            logger.info("PaddleOCR引擎初始化成功")
+            self._is_initialized = True
+            
         except Exception as e:
-            logger.error(f"初始化Tesseract OCR引擎失败: {str(e)}")
+            logger.error(f"初始化PaddleOCR引擎失败: {str(e)}")
             self._is_initialized = False
     
     def is_available(self) -> bool:
         """检查OCR服务是否可用"""
-        logger.debug("检查Tesseract OCR服务可用性")
+        logger.debug("检查PaddleOCR服务可用性")
         if not self._is_initialized:
-            logger.debug("Tesseract OCR服务未初始化，尝试初始化...")
+            logger.debug("PaddleOCR服务未初始化，尝试初始化...")
             self._initialize_ocr()
         status = "可用" if self._is_initialized else "不可用"
-        logger.debug(f"Tesseract OCR服务状态: {status}")
+        logger.debug(f"PaddleOCR服务状态: {status}")
         return self._is_initialized
     
     def _pdf_page_to_image(self, pdf_path: str, page_num: int) -> np.ndarray:
@@ -56,10 +55,10 @@ class TesseractOCRService:
             page = doc[page_num - 1]  # pymupdf的页面索引从0开始
             
             # 设置DPI以获得更好的图像质量
-            zoom = default_tesseract_config.DPI / 72  # 72是PDF的默认DPI
+            zoom = default_paddle_ocr_config.DPI / 72  # 72是PDF的默认DPI
             mat = fitz.Matrix(zoom, zoom)
             
-            logger.debug(f"PDF转图像配置: DPI={default_tesseract_config.DPI}, 缩放比例={zoom}")
+            logger.debug(f"PDF转图像配置: DPI={default_paddle_ocr_config.DPI}, 缩放比例={zoom}")
             pix = page.get_pixmap(matrix=mat)
             
             # 转换为PIL图像
@@ -74,88 +73,34 @@ class TesseractOCRService:
             logger.error(f"PDF页面转换为图像失败: 文件={os.path.basename(pdf_path)}, 页码={page_num}, 错误={str(e)}")
             raise
     
-    def _extract_table_with_camelot(self, pdf_path: str, page_num: int) -> List[Dict[str, Any]]:
-        """使用Camelot提取表格"""
-        logger.info(f"开始使用Camelot提取表格: 文件={os.path.basename(pdf_path)}, 页码={page_num}")
-        tables = []
-        
-        try:
-            # 使用Camelot读取PDF中的表格
-            logger.debug(f"Camelot配置: 页码={page_num}, flavor=lattice, line_scale=40")
-            extracted_tables = camelot.read_pdf(
-                pdf_path,
-                pages=str(page_num),
-                flavor='lattice',
-                line_scale=40
-            )
-            
-            logger.info(f"Camelot提取表格完成，共找到{len(extracted_tables)}个表格候选")
-            
-            # 处理提取的表格
-            valid_tables_count = 0
-            for table_idx, table in enumerate(extracted_tables):
-                table_data = {
-                    'table_idx': table_idx,
-                    'cells': []
-                }
-                
-                # 获取表格数据
-                df = table.df
-                
-                # 遍历表格的每个单元格
-                cells_count = 0
-                for row_idx, row in df.iterrows():
-                    for col_idx, cell in enumerate(row):
-                        if cell and cell.strip():
-                            table_data['cells'].append({
-                                'text': cell.strip(),
-                                'row': row_idx,
-                                'col': col_idx
-                            })
-                            cells_count += 1
-                
-                if table_data['cells']:
-                    tables.append(table_data)
-                    valid_tables_count += 1
-                    logger.info(f"成功提取页面 {page_num} 的表格 {table_idx}: 包含{cells_count}个有效单元格, 表格尺寸={df.shape}")
-                else:
-                    logger.debug(f"跳过页面 {page_num} 的表格 {table_idx}: 无有效单元格")
-            
-            logger.info(f"表格提取处理完成: 文件={os.path.basename(pdf_path)}, 页码={page_num}, 有效表格数量={valid_tables_count}")
-            
-        except Exception as e:
-            logger.error(f"使用Camelot提取表格失败 (页面 {page_num}): {str(e)}")
-        
-        return tables
     
-    def recognize_text(self, pdf_path: str, page_num: int) -> Dict[str, Any]:
-        """识别PDF页面中的文本，使用Tesseract OCR"""
-        temp_image_path = None
+    def _process_paddle_ocr_result(self, ocr_result) -> str:
+        """处理PaddleOCR识别结果，提取文本内容"""
         try:
-            logger.info(f"开始OCR文本识别: 文件={os.path.basename(pdf_path)}, 页码={page_num}")
+            if not ocr_result or len(ocr_result) == 0:
+                return ""
             
-            img_array = self._pdf_page_to_image(pdf_path, page_num)
+            # 从PaddleOCR结果中提取文本
+            text_lines = []
+            for line in ocr_result:
+                if line and len(line) >= 2:
+                    # PaddleOCR结果格式: [[[x1,y1],[x2,y2],[x3,y3],[x4,y4]], (text, confidence)]
+                    text_content = line[1][0] if line[1] else ""
+                    confidence = line[1][1] if line[1] and len(line[1]) > 1 else 0.0
+                    
+                    # 只保留置信度高于阈值的文本
+                    if confidence >= default_paddle_ocr_config.MIN_CONFIDENCE and text_content.strip():
+                        text_lines.append(text_content.strip())
             
-            # 转换为PIL图像进行OCR处理
-            img = Image.fromarray(img_array)
-            
-            # 调用Tesseract进行文本识别
-            logger.info(f"调用Tesseract进行文本识别: 文件={os.path.basename(pdf_path)}, 页码={page_num}")
-            
-            # 使用配置中的Tesseract参数
-            text = pytesseract.image_to_string(img, config=default_tesseract_config.TESSERACT_CONFIG)
-            logger.debug(f"使用Tesseract配置: {default_tesseract_config.TESSERACT_CONFIG}")
+            # 合并所有文本行
+            full_text = '\n'.join(text_lines)
             
             # 清理文本中的多余空格，特别是中文字符之间的空格
-            if text:
-                # 使用正则表达式去除中文字符之间的空格
-                # 中文字符范围：一-鿿
+            if full_text:
                 import re
                 
-                # 中文文本清理和格式化
-                
                 # 1. 首先处理所有行，去除首尾空格
-                lines = [line.strip() for line in text.split('\n') if line.strip()]
+                lines = [line.strip() for line in full_text.split('\n') if line.strip()]
                 
                 # 2. 将所有行合并成一个文本进行整体处理
                 merged_text = ' '.join(lines)
@@ -189,25 +134,49 @@ class TesseractOCRService:
                 # 11. 处理"+"等特殊符号周围的空格
                 merged_text = re.sub(r'\s*\+\s*', '+', merged_text)
                 
-                # 8. 再次去除行首尾空格并移除空行
+                # 12. 再次去除行首尾空格并移除空行
                 formatted_lines = [line.strip() for line in merged_text.split('\n') if line.strip()]
-                text = '\n'.join(formatted_lines)
+                full_text = '\n'.join(formatted_lines)
                 logger.debug("已清理文本中的多余空格")
             
-            logger.debug(f"Tesseract OCR识别完成，获取到文本")
+            return full_text
+            
+        except Exception as e:
+            logger.error(f"处理PaddleOCR识别结果失败: {str(e)}")
+            return ""
+    
+    def recognize_text(self, pdf_path: str, page_num: int) -> Dict[str, Any]:
+        """识别PDF页面中的文本，使用PaddleOCR"""
+        temp_image_path = None
+        try:
+            logger.info(f"开始OCR文本识别: 文件={os.path.basename(pdf_path)}, 页码={page_num}")
+            
+            img_array = self._pdf_page_to_image(pdf_path, page_num)
+            
+            # 保存临时图像文件供PaddleOCR处理
+            temp_image_path = f"temp_ocr_{page_num}.png"
+            temp_img = Image.fromarray(img_array)
+            temp_img.save(temp_image_path)
+            
+            # 调用PaddleOCR进行文本识别
+            logger.info(f"调用PaddleOCR进行文本识别: 文件={os.path.basename(pdf_path)}, 页码={page_num}")
+            
+            ocr_result = self._pipeline.predict(temp_image_path)
+            
+            # 处理识别结果
+            text = self._process_paddle_ocr_result(ocr_result)
+            
+            logger.debug(f"PaddleOCR识别完成，获取到文本")
             
             # 处理识别结果
             text_lines_count = len(text.strip().split('\n')) if text else 0
             
-            # 使用Camelot提取表格
-            tables = self._extract_table_with_camelot(pdf_path, page_num)
-            
             recognized_text_length = len(text.strip())
-            logger.info(f"OCR文本识别完成: 文件={os.path.basename(pdf_path)}, 页码={page_num}, 识别文本长度={recognized_text_length}, 识别文本行数={text_lines_count}, 提取表格数量={len(tables)}")
+            logger.info(f"OCR文本识别完成: 文件={os.path.basename(pdf_path)}, 页码={page_num}, 识别文本长度={recognized_text_length}, 识别文本行数={text_lines_count}")
             
             return {
                 'text': text.strip(),
-                'tables': tables
+                'tables': []  # 不再识别表格，返回空列表
             }
             
         except Exception as e:
@@ -216,6 +185,13 @@ class TesseractOCRService:
                 'text': "",
                 'tables': []
             }
+        finally:
+            # 清理临时文件
+            if temp_image_path and os.path.exists(temp_image_path):
+                try:
+                    os.remove(temp_image_path)
+                except Exception as e:
+                    logger.warning(f"清理临时文件失败: {str(e)}")
     
     def process_page_with_ocr_fallback(self, pdf_path: str, page_num: int, page_data: Dict[str, Any]) -> Dict[str, Any]:
         """当pdfplumber提取的文本不足时，使用OCR作为后备方案"""
@@ -225,10 +201,10 @@ class TesseractOCRService:
         current_text_length = len(page_data.get('text', ''))
         tables_count = len(page_data.get('tables', []))
         
-        logger.debug(f"当前页面状态: 文本长度={current_text_length}, 表格数量={tables_count}, OCR阈值={default_tesseract_config.OCR_THRESHOLD}")
+        logger.debug(f"当前页面状态: 文本长度={current_text_length}, 表格数量={tables_count}, OCR阈值={default_paddle_ocr_config.OCR_THRESHOLD}")
         
-        if current_text_length < default_tesseract_config.OCR_THRESHOLD:
-            logger.info(f"页面 {page_num} 文本长度 {current_text_length} 低于阈值 {default_tesseract_config.OCR_THRESHOLD}，触发OCR识别")
+        if current_text_length < default_paddle_ocr_config.OCR_THRESHOLD:
+            logger.info(f"页面 {page_num} 文本长度 {current_text_length} 低于阈值 {default_paddle_ocr_config.OCR_THRESHOLD}，触发OCR识别")
             
             # 调用OCR识别
             ocr_result = self.recognize_text(pdf_path, page_num)
@@ -250,6 +226,4 @@ class TesseractOCRService:
         return page_data
 
 # 创建全局OCR服务实例
-ocr_service = TesseractOCRService()
-
-
+ocr_service = PaddleOCRService()

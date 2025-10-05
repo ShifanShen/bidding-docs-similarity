@@ -58,37 +58,79 @@ cd bidding-docs-similarity
 ```
 
 2. **准备本地模型**
-   将本地 text2vec 模型放在 `local_text2vec_model/` 目录下。
-3. **启动服务**
 
 ```bash
-docker-compose up --build
+python download_model.py
+```
+这将自动下载`shibing624/text2vec-base-chinese`模型并保存到`local_text2vec_model/`目录。
+
+3. **构建Docker镜像**
+
+```bash
+docker build -t bidding-docs-similarity .
 ```
 
-4. **访问系统**
+4. **启动服务**
 
-- 前端界面：http://localhost:8000
-- API 文档：http://localhost:8000/docs
+```bash
+docker run -d --name bidding-similarity-app -p 8020:8020 bidding-docs-similarity
+```
+
+或使用docker-compose：
+
+```bash
+docker-compose up --build -d
+```
+
+5. **访问系统**
+
+- 前端界面：http://localhost:8020
+- API 文档：http://localhost:8020/docs
 
 ### 方式二：本地部署
 
-1. **安装依赖**
+1. **准备环境**
+   - 确保已安装 Python 3.12 或更高版本
+   - 安装系统依赖：
+     - 对于 Linux/Debian：`sudo apt-get install gcc g++ tesseract-ocr tesseract-ocr-chi-sim libgl1-mesa-glx`
+     - 对于 CentOS/RHEL：`sudo yum install gcc gcc-c++ tesseract tesseract-langpack-chi_sim mesa-libGL`
+     - 对于 Windows：下载并安装[Tesseract OCR](https://github.com/UB-Mannheim/tesseract/wiki)，并添加到系统环境变量
+
+2. **安装依赖**
 
 ```bash
+# 推荐使用uv进行更快的安装
+pip install uv
+uv pip install -r requirements.txt
+
+# 或使用标准pip
+pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-2. **准备本地模型**
+3. **准备本地模型**
 
-   ```bash
-   python download_model.py
-   ```
-3. 将本地模型放在 `local_text2vec_model/` 目录下。
+```bash
+python download_model.py
+```
+这将自动下载`shibing624/text2vec-base-chinese`模型并保存到`local_text2vec_model/`目录。
+
 4. **启动服务**
 
 ```bash
 python -m app.main
 ```
+
+或使用uvicorn：
+
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8020 --reload
+```
+
+5. **访问系统**
+
+- 前端界面：http://localhost:8020
+- API 文档：http://localhost:8020/docs
 
 ---
 
@@ -165,6 +207,12 @@ bidding-docs-similarity/
 
 ## 常见问题
 
+### 安装相关
+
+- **多个顶级包错误**：如果安装时出现 `Multiple top-level packages discovered` 错误，这是由于项目根目录下存在多个Python包或数据目录。我们已经在`pyproject.toml`中通过`[tool.setuptools] packages = ["app"]`解决了这个问题。
+- **依赖安装失败**：某些依赖（如torch、paddlepaddle）体积较大，安装可能需要较长时间或特定网络环境。推荐使用`uv`进行更快的安装：`pip install uv && uv pip install -r requirements.txt`。
+- **Python版本不兼容**：项目需要Python 3.12或更高版本，请检查您的Python版本：`python --version`。
+
 ### 模型相关
 
 - **模型加载报错**：请确保 `sentence-transformers` 版本与模型兼容，建议 `pip install -U sentence-transformers`。
@@ -173,7 +221,7 @@ bidding-docs-similarity/
 ### 部署相关
 
 - **Docker 构建失败**：检查 Docker 和 Docker Compose 版本，建议使用最新版本。
-- **端口冲突**：如 8000 端口被占用，可修改 `docker-compose.yml` 中的端口映射。
+- **端口冲突**：如 8020 端口被占用，可修改 `docker-compose.yml` 中的端口映射。
 - **内存不足**：大文件分析需要足够内存，建议至少 4GB RAM。
 
 ### 性能相关
