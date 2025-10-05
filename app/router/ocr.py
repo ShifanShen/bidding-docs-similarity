@@ -106,7 +106,7 @@ async def upload_and_extract_text(
 async def process_pdf_file(file_path: str, page_range: Optional[str], extract_tables: bool, confidence_threshold: float) -> Dict[str, Any]:
     """Process PDF file"""
     import time
-    start_time = time.time()-
+    start_time = time.time()
     
     try:
         # Parse page range
