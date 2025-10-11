@@ -3,13 +3,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 from app.router import similarity, ocr
+from app.routers import similarity_v2
 from app.config.log_config import log_config
+from app.core.config_manager import config_manager
 import os
 
 # 初始化日志配置
 log_config.setup_logging()
 
-app = FastAPI(title="Bidding Docs Similarity System")
+# 获取配置
+config = config_manager.config
+
+app = FastAPI(
+    title=config.app_name,
+    description="投标文件相似度检测系统",
+    version="2.0.0"
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -24,13 +33,19 @@ static_dir = os.path.join(os.path.dirname(__file__), 'static')
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 # 挂载路由
-app.include_router(similarity.router)
-app.include_router(ocr.router)
+app.include_router(similarity.router, tags=["similarity-v1"])
+app.include_router(similarity_v2.router, tags=["similarity-v2"])
+app.include_router(ocr.router, tags=["ocr"])
 
 # 首页路由，返回前端页面
 @app.get("/")
 def root():
     return RedirectResponse(url="/static/index.html")
+
+# 健康检查
+@app.get("/health")
+def health_check():
+    return {"status": "healthy", "version": "2.0.0"}
 
 if __name__ == "__main__":
     import uvicorn

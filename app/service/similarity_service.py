@@ -172,20 +172,26 @@ class SimilarityService:
         if ext == '.pdf':
             pages = extract_text_from_pdf(file_path)
             segments = []
-            for page_data in pages:
-                page_num = page_data['page_num']
-                
-                # 处理普通文本
-                for seg in split_text_to_segments(page_data['text']):
-                    clean_seg = remove_stopwords(seg, list(self.stopwords))
-                    if clean_seg and len(clean_seg) >= self.min_text_length:
-                        grammar_errors = detect_grammar_errors(clean_seg)
-                        segments.append({
-                            'page': page_num,
-                            'text': clean_seg,
-                            'grammar_errors': grammar_errors,
-                            'is_table_cell': False
-                        })
+            
+            # 如果启用页面级别检测，先进行页面级别的处理
+            if self.config.ENABLE_PAGE_LEVEL_DETECTION:
+                segments = self._process_pages_with_context(pages, file_path)
+            else:
+                # 原有的分段逻辑
+                for page_data in pages:
+                    page_num = page_data['page_num']
+                    
+                    # 处理普通文本
+                    for seg in split_text_to_segments(page_data['text']):
+                        clean_seg = remove_stopwords(seg, list(self.stopwords))
+                        if clean_seg and len(clean_seg) >= self.min_text_length:
+                            grammar_errors = detect_grammar_errors(clean_seg)
+                            segments.append({
+                                'page': page_num,
+                                'text': clean_seg,
+                                'grammar_errors': grammar_errors,
+                                'is_table_cell': False
+                            })
                 
                 # 处理表格
                 for table in page_data['tables']:
@@ -247,6 +253,346 @@ class SimilarityService:
             return segments
         else:
             return []
+
+    def _process_pages_with_context(self, pages: List[Dict[str, Any]], file_path: str) -> List[Dict[str, Any]]:
+        """
+        上下文感知的页面级别处理
+        1. 整页文本相似度检测
+        2. 相邻页面合并
+        3. 智能分段避免重复
+        """
+        segments = []
+        page_texts = []
+        
+        # 第一步：提取每页的完整文本
+        for page_data in pages:
+            page_num = page_data['page_num']
+            page_text = page_data['text']
+            
+            if len(page_text) >= self.config.MIN_PAGE_TEXT_LENGTH:
+                clean_text = remove_stopwords(page_text, list(self.stopwords))
+                if clean_text:
+                    page_texts.append({
+                        'page': page_num,
+                        'text': clean_text,
+                        'original_text': page_text,
+                        'grammar_errors': detect_grammar_errors(clean_text),
+                        'is_table_cell': False,
+                        'is_page_level': True
+                    })
+        
+        # 第二步：页面级别相似度检测
+        if len(page_texts) > 1:
+            page_similarities = self._detect_page_similarities(page_texts)
+            
+            # 第三步：合并相似页面
+            merged_pages = self._merge_similar_pages(page_texts, page_similarities)
+            
+            # 第四步：对合并后的页面进行智能分段
+            for page_info in merged_pages:
+                if page_info.get('is_merged', False):
+                    # 合并的页面，直接使用整页文本
+                    segments.append(page_info)
+                else:
+                    # 未合并的页面，进行智能分段
+                    page_segments = self._smart_segment_page(page_info)
+                    segments.extend(page_segments)
+        else:
+            # 单页文档，直接分段
+            for page_info in page_texts:
+                page_segments = self._smart_segment_page(page_info)
+                segments.extend(page_segments)
+        
+        return segments
+    
+    def _detect_page_similarities(self, page_texts: List[Dict[str, Any]]) -> Dict[Tuple[int, int], float]:
+        """
+        检测页面间的相似度
+        """
+        similarities = {}
+        
+        # 将页面文本转换为向量
+        texts = [page['text'] for page in page_texts]
+        if not texts:
+            return similarities
+            
+        try:
+            embeddings = self.model.encode(texts, convert_to_tensor=True)
+            embeddings = embeddings.cpu().numpy()
+            
+            # 计算页面间相似度
+            for i in range(len(page_texts)):
+                for j in range(i + 1, len(page_texts)):
+                    # 计算余弦相似度
+                    sim = np.dot(embeddings[i], embeddings[j]) / (
+                        np.linalg.norm(embeddings[i]) * np.linalg.norm(embeddings[j])
+                    )
+                    similarities[(i, j)] = float(sim)
+                    
+        except Exception as e:
+            logger.error(f"页面相似度检测失败: {str(e)}")
+            
+        return similarities
+    
+    def _merge_similar_pages(self, page_texts: List[Dict[str, Any]], 
+                           similarities: Dict[Tuple[int, int], float]) -> List[Dict[str, Any]]:
+        """
+        合并相似的页面
+        """
+        merged_pages = []
+        merged_indices = set()
+        
+        # 按相似度排序
+        sorted_similarities = sorted(similarities.items(), key=lambda x: x[1], reverse=True)
+        
+        for (i, j), sim in sorted_similarities:
+            if sim >= self.config.PAGE_SIMILARITY_THRESHOLD and i not in merged_indices and j not in merged_indices:
+                # 合并相似页面
+                page_i = page_texts[i]
+                page_j = page_texts[j]
+                
+                merged_page = {
+                    'page': f"{page_i['page']}-{page_j['page']}",
+                    'text': page_i['text'],  # 使用第一个页面的文本
+                    'original_text': page_i['original_text'],
+                    'grammar_errors': page_i['grammar_errors'],
+                    'is_table_cell': False,
+                    'is_page_level': True,
+                    'is_merged': True,
+                    'similarity': sim,
+                    'merged_pages': [page_i['page'], page_j['page']]
+                }
+                
+                merged_pages.append(merged_page)
+                merged_indices.add(i)
+                merged_indices.add(j)
+        
+        # 添加未合并的页面
+        for i, page in enumerate(page_texts):
+            if i not in merged_indices:
+                merged_pages.append(page)
+        
+        return merged_pages
+    
+    def _smart_segment_page(self, page_info: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        智能分段：避免重复分段，保持上下文完整性
+        """
+        segments = []
+        page_text = page_info['text']
+        page_num = page_info['page']
+        
+        # 如果页面文本较短，直接作为一个段落
+        if len(page_text) <= self.config.MAX_SEGMENT_LENGTH:
+            segments.append({
+                'page': page_num,
+                'text': page_text,
+                'grammar_errors': page_info['grammar_errors'],
+                'is_table_cell': False,
+                'is_page_level': True
+            })
+        else:
+            # 智能分段：按语义边界分割
+            page_segments = self._semantic_segmentation(page_text)
+            
+            for i, seg_text in enumerate(page_segments):
+                if len(seg_text) >= self.config.MIN_SEGMENT_LENGTH:
+                    segments.append({
+                        'page': page_num,
+                        'text': seg_text,
+                        'grammar_errors': detect_grammar_errors(seg_text),
+                        'is_table_cell': False,
+                        'is_page_level': True,
+                        'segment_index': i
+                    })
+        
+        return segments
+    
+    def _semantic_segmentation(self, text: str) -> List[str]:
+        """
+        基于语义边界的智能分段
+        """
+        segments = []
+        
+        # 按段落分割
+        paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
+        
+        current_segment = ""
+        for para in paragraphs:
+            # 如果当前段落加上新段落超过最大长度，保存当前段落
+            if len(current_segment) + len(para) > self.config.MAX_SEGMENT_LENGTH and current_segment:
+                segments.append(current_segment.strip())
+                current_segment = para
+            else:
+                if current_segment:
+                    current_segment += "\n\n" + para
+                else:
+                    current_segment = para
+        
+        # 添加最后一个段落
+        if current_segment:
+            segments.append(current_segment.strip())
+        
+        return segments
+
+    def _post_process_similarity_results(self, details: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        后处理相似度检测结果：
+        1. 去重：移除重复的相似片段
+        2. 合并：合并相邻的相似片段
+        3. 排序：按相似度排序
+        """
+        if not details:
+            return details
+        
+        # 第一步：去重 - 基于文本内容和页码
+        unique_details = self._remove_duplicate_results(details)
+        
+        # 第二步：合并相邻相似片段
+        merged_details = self._merge_adjacent_similar_segments(unique_details)
+        
+        # 第三步：按相似度排序
+        merged_details.sort(key=lambda x: x.get('similarity', 0), reverse=True)
+        
+        # 第四步：重新分配排名
+        for i, detail in enumerate(merged_details):
+            detail['rank'] = i + 1
+        
+        return merged_details
+    
+    def _remove_duplicate_results(self, details: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        移除重复的相似片段检测结果
+        """
+        seen_combinations = set()
+        unique_details = []
+        
+        for detail in details:
+            # 创建唯一标识：文件1+页码1+文件2+页码2+文本1的前50个字符
+            text1_preview = detail.get('text', '')[:50]
+            text2_preview = detail.get('similar_text', '')[:50]
+            
+            key = (
+                detail.get('bid_file', ''),
+                detail.get('page', 0),
+                detail.get('similar_with', ''),
+                detail.get('similar_page', 0),
+                text1_preview,
+                text2_preview
+            )
+            
+            if key not in seen_combinations:
+                seen_combinations.add(key)
+                unique_details.append(detail)
+        
+        return unique_details
+    
+    def _merge_adjacent_similar_segments(self, details: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        合并相邻的相似片段
+        """
+        if not details:
+            return details
+        
+        # 按文件对和页码分组
+        grouped_details = {}
+        for detail in details:
+            file_pair = (detail.get('bid_file', ''), detail.get('similar_with', ''))
+            if file_pair not in grouped_details:
+                grouped_details[file_pair] = []
+            grouped_details[file_pair].append(detail)
+        
+        merged_details = []
+        
+        for file_pair, group_details in grouped_details.items():
+            # 按页码排序
+            group_details.sort(key=lambda x: (x.get('page', 0), x.get('similar_page', 0)))
+            
+            # 合并相邻的相似片段
+            current_merged = None
+            
+            for detail in group_details:
+                if current_merged is None:
+                    current_merged = detail.copy()
+                else:
+                    # 检查是否可以合并
+                    if self._can_merge_segments(current_merged, detail):
+                        # 合并片段
+                        current_merged = self._merge_two_segments(current_merged, detail)
+                    else:
+                        # 不能合并，保存当前合并结果，开始新的合并
+                        merged_details.append(current_merged)
+                        current_merged = detail.copy()
+            
+            # 添加最后一个合并结果
+            if current_merged:
+                merged_details.append(current_merged)
+        
+        return merged_details
+    
+    def _can_merge_segments(self, seg1: Dict[str, Any], seg2: Dict[str, Any]) -> bool:
+        """
+        判断两个相似片段是否可以合并
+        """
+        # 必须是同一个文件对
+        if (seg1.get('bid_file') != seg2.get('bid_file') or 
+            seg1.get('similar_with') != seg2.get('similar_with')):
+            return False
+        
+        # 页码必须相邻（相差1页以内）
+        page_diff = abs(seg1.get('page', 0) - seg2.get('page', 0))
+        similar_page_diff = abs(seg1.get('similar_page', 0) - seg2.get('similar_page', 0))
+        
+        if page_diff > 1 or similar_page_diff > 1:
+            return False
+        
+        # 相似度必须都高于合并阈值
+        sim1 = seg1.get('similarity', 0)
+        sim2 = seg2.get('similarity', 0)
+        
+        if sim1 < self.config.MERGE_THRESHOLD or sim2 < self.config.MERGE_THRESHOLD:
+            return False
+        
+        return True
+    
+    def _merge_two_segments(self, seg1: Dict[str, Any], seg2: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        合并两个相似片段
+        """
+        merged = seg1.copy()
+        
+        # 合并页码范围
+        page1 = seg1.get('page', 0)
+        page2 = seg2.get('page', 0)
+        similar_page1 = seg1.get('similar_page', 0)
+        similar_page2 = seg2.get('similar_page', 0)
+        
+        merged['page'] = f"{min(page1, page2)}-{max(page1, page2)}"
+        merged['similar_page'] = f"{min(similar_page1, similar_page2)}-{max(similar_page1, similar_page2)}"
+        
+        # 合并文本（取较长的文本）
+        text1 = seg1.get('text', '')
+        text2 = seg2.get('text', '')
+        similar_text1 = seg1.get('similar_text', '')
+        similar_text2 = seg2.get('similar_text', '')
+        
+        merged['text'] = text1 if len(text1) > len(text2) else text2
+        merged['similar_text'] = similar_text1 if len(similar_text1) > len(similar_text2) else similar_text2
+        
+        # 取较高的相似度
+        merged['similarity'] = max(seg1.get('similarity', 0), seg2.get('similarity', 0))
+        
+        # 合并规避行为检测结果
+        merged['order_changed'] = seg1.get('order_changed', False) or seg2.get('order_changed', False)
+        merged['stopword_evade'] = seg1.get('stopword_evade', False) or seg2.get('stopword_evade', False)
+        merged['synonym_evade'] = seg1.get('synonym_evade', False) or seg2.get('synonym_evade', False)
+        merged['semantic_evade'] = seg1.get('semantic_evade', False) or seg2.get('semantic_evade', False)
+        
+        # 标记为合并结果
+        merged['is_merged'] = True
+        merged['merged_count'] = seg1.get('merged_count', 1) + seg2.get('merged_count', 1)
+        
+        return merged
 
     def _create_faiss_index(self, dim: int) -> faiss.Index:
         """
@@ -506,7 +852,7 @@ class SimilarityService:
                             bid_vecs_list: List[np.ndarray],
                             tender_vecs: np.ndarray) -> Tuple[List[List[Dict[str, Any]]], List[np.ndarray]]:
         """
-        剔除投标文件中与招标文件高度相似的片段
+        剔除投标文件中与招标文件高度相似的片段（增强版）
         """
         filtered_bid_segments = []
         filtered_bid_vecs = []
@@ -524,9 +870,21 @@ class SimilarityService:
                     batch_vecs = vecs[i:i+self.batch_size]
                     if batch_vecs.shape[0] > 0:
                         sims, _ = self._faiss_max_sim(batch_vecs, tender_vecs)
-                        # 只保留与招标文件相似度低于阈值的片段
-                        max_seg_idx = len(segs) - 1
-                        keep_idx.extend([min(i+ii, max_seg_idx) for ii, sim in enumerate(sims) if sim < self.tender_similarity_threshold])
+                        
+                        # 增强的过滤逻辑
+                        for ii, sim in enumerate(sims):
+                            seg_idx = min(i + ii, len(segs) - 1)
+                            segment = segs[seg_idx]
+                            
+                            # 多阈值过滤
+                            if self.config.ENABLE_ENHANCED_TENDER_FILTERING:
+                                should_keep = self._enhanced_tender_filtering(segment, sim)
+                            else:
+                                should_keep = sim < self.tender_similarity_threshold
+                            
+                            if should_keep:
+                                keep_idx.append(seg_idx)
+                    
                     # 定期清理内存
                     if (i // self.batch_size) % self.memory_cleanup_interval == 0:
                         self._cleanup_memory()
@@ -544,6 +902,70 @@ class SimilarityService:
             self._cleanup_memory()
         
         return filtered_bid_segments, filtered_bid_vecs
+    
+    def _enhanced_tender_filtering(self, segment: Dict[str, Any], similarity: float) -> bool:
+        """
+        增强的招标文件过滤逻辑
+        """
+        text = segment.get('text', '')
+        
+        # 1. 基础相似度过滤
+        if similarity < self.config.TENDER_LOW_SIMILARITY_THRESHOLD:
+            return True  # 低相似度，保留
+        
+        # 2. 高相似度直接过滤
+        if similarity > self.config.TENDER_HIGH_SIMILARITY_THRESHOLD:
+            return False  # 高相似度，过滤掉
+        
+        # 3. 中等相似度需要进一步判断
+        if similarity > self.config.TENDER_MEDIUM_SIMILARITY_THRESHOLD:
+            # 检查是否包含大量招标文件特有的术语
+            tender_terms = ['招标文件', '招标公告', '投标须知', '合同条款', '技术规范', '工程量清单']
+            tender_term_count = sum(1 for term in tender_terms if term in text)
+            
+            if tender_term_count >= 2:
+                return False  # 包含多个招标文件术语，过滤掉
+        
+        # 4. 检查是否为模板文本
+        if self._is_template_text(text):
+            return False  # 模板文本，过滤掉
+        
+        # 5. 检查是否包含公章信息
+        if self.config.ENABLE_SEAL_DETECTION and self._contains_seal_info(text):
+            # 如果只是公章不同，但其他内容高度相似，则过滤掉
+            if similarity > self.config.SEAL_SIMILARITY_THRESHOLD:
+                return False
+        
+        return True  # 通过所有检查，保留
+    
+    def _is_template_text(self, text: str) -> bool:
+        """
+        判断是否为模板文本
+        """
+        if not self.config.ENABLE_ENHANCED_TEMPLATE_FILTERING:
+            return False
+        
+        # 检查是否包含模板关键词
+        template_count = sum(1 for pattern in self.config.TEMPLATE_PATTERNS if pattern in text)
+        
+        # 如果包含多个模板关键词，认为是模板文本
+        if template_count >= 2:
+            return True
+        
+        # 检查文本长度和结构特征
+        if len(text) < 200:  # 短文本
+            # 检查是否以模板开头
+            for pattern in self.config.TEMPLATE_PATTERNS:
+                if text.startswith(pattern):
+                    return True
+        
+        return False
+    
+    def _contains_seal_info(self, text: str) -> bool:
+        """
+        检查文本是否包含公章信息
+        """
+        return any(pattern in text for pattern in self.config.SEAL_PATTERNS)
         
     def _compare_bid_documents(self, 
                               filtered_bid_segments: List[List[Dict[str, Any]]],
@@ -641,6 +1063,10 @@ class SimilarityService:
                     except:
                         pass
         
+        # 后处理：合并相邻相似片段，去重
+        if self.config.ENABLE_ADJACENT_MERGE:
+            details = self._post_process_similarity_results(details)
+        
         return details
         
     def _is_valid_similarity(self, sim: float, text1: str, text2: str,
@@ -692,7 +1118,176 @@ class SimilarityService:
                 # 降低极高相似度的通用模板文本的阈值要求
                 is_valid = sim > self.config.VERY_HIGH_SIMILARITY_THRESHOLD
         
+        # 公章忽略逻辑：如果只是公章不同，但其他内容高度相似，则认为是有效相似
+        if is_valid and self.config.ENABLE_SEAL_DETECTION:
+            if self._is_only_seal_different(text1, text2, sim):
+                # 忽略公章差异，保持有效相似
+                pass
+        
         return is_valid
+    
+    def _is_only_seal_different(self, text1: str, text2: str, similarity: float) -> bool:
+        """
+        判断是否只是公章不同
+        """
+        # 如果相似度很高，且都包含公章信息，则可能是公章不同
+        if similarity > self.config.SEAL_SIMILARITY_THRESHOLD:
+            has_seal1 = self._contains_seal_info(text1)
+            has_seal2 = self._contains_seal_info(text2)
+            
+            if has_seal1 and has_seal2:
+                # 移除公章相关文本后重新计算相似度
+                clean_text1 = self._remove_seal_text(text1)
+                clean_text2 = self._remove_seal_text(text2)
+                
+                if len(clean_text1) > 50 and len(clean_text2) > 50:
+                    # 计算去除公章后的相似度
+                    try:
+                        clean_embeddings = self.model.encode([clean_text1, clean_text2], convert_to_tensor=True)
+                        clean_embeddings = clean_embeddings.cpu().numpy()
+                        clean_sim = np.dot(clean_embeddings[0], clean_embeddings[1]) / (
+                            np.linalg.norm(clean_embeddings[0]) * np.linalg.norm(clean_embeddings[1])
+                        )
+                        
+                        # 如果去除公章后相似度仍然很高，则认为是公章不同
+                        if clean_sim > 0.95:
+                            return True
+                    except Exception as e:
+                        logger.error(f"公章相似度计算失败: {str(e)}")
+        
+        return False
+    
+    def _remove_seal_text(self, text: str) -> str:
+        """
+        移除文本中的公章相关信息
+        """
+        import re
+        
+        # 移除公章关键词
+        for pattern in self.config.SEAL_PATTERNS:
+            text = text.replace(pattern, '')
+        
+        # 移除可能的公章位置描述
+        seal_positions = ['左下角', '右下角', '左上角', '右上角', '中间', '中央']
+        for pos in seal_positions:
+            text = text.replace(pos, '')
+        
+        # 移除多余的空格
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        return text
+    
+    def _calculate_multi_dimensional_similarity(self, text1: str, text2: str) -> float:
+        """
+        计算多维度相似度
+        """
+        if not self.config.ENABLE_MULTI_DIMENSIONAL_SIMILARITY:
+            # 使用原有的语义相似度
+            try:
+                embeddings = self.model.encode([text1, text2], convert_to_tensor=True)
+                embeddings = embeddings.cpu().numpy()
+                return float(np.dot(embeddings[0], embeddings[1]) / (
+                    np.linalg.norm(embeddings[0]) * np.linalg.norm(embeddings[1])
+                ))
+            except Exception as e:
+                logger.error(f"语义相似度计算失败: {str(e)}")
+                return 0.0
+        
+        # 多维度相似度计算
+        weights = self.config.SIMILARITY_WEIGHTS
+        
+        # 1. 语义相似度
+        semantic_sim = self._calculate_semantic_similarity(text1, text2)
+        
+        # 2. 结构相似度
+        structural_sim = self._calculate_structural_similarity(text1, text2)
+        
+        # 3. 词汇相似度
+        lexical_sim = self._calculate_lexical_similarity(text1, text2)
+        
+        # 加权平均
+        final_similarity = (
+            weights['semantic'] * semantic_sim +
+            weights['structural'] * structural_sim +
+            weights['lexical'] * lexical_sim
+        )
+        
+        return final_similarity
+    
+    def _calculate_semantic_similarity(self, text1: str, text2: str) -> float:
+        """
+        计算语义相似度
+        """
+        try:
+            embeddings = self.model.encode([text1, text2], convert_to_tensor=True)
+            embeddings = embeddings.cpu().numpy()
+            return float(np.dot(embeddings[0], embeddings[1]) / (
+                np.linalg.norm(embeddings[0]) * np.linalg.norm(embeddings[1])
+            ))
+        except Exception as e:
+            logger.error(f"语义相似度计算失败: {str(e)}")
+            return 0.0
+    
+    def _calculate_structural_similarity(self, text1: str, text2: str) -> float:
+        """
+        计算结构相似度
+        """
+        import re
+        
+        # 提取结构特征
+        def extract_structure_features(text):
+            features = {
+                'paragraph_count': len([p for p in text.split('\n\n') if p.strip()]),
+                'sentence_count': len(re.findall(r'[。！？]', text)),
+                'avg_sentence_length': len(text) / max(len(re.findall(r'[。！？]', text)), 1),
+                'has_numbers': bool(re.search(r'\d+', text)),
+                'has_special_chars': bool(re.search(r'[（）【】《》]', text)),
+                'line_count': len([l for l in text.split('\n') if l.strip()])
+            }
+            return features
+        
+        features1 = extract_structure_features(text1)
+        features2 = extract_structure_features(text2)
+        
+        # 计算结构相似度
+        similarities = []
+        for key in features1:
+            if key in features2:
+                val1, val2 = features1[key], features2[key]
+                if isinstance(val1, bool) and isinstance(val2, bool):
+                    sim = 1.0 if val1 == val2 else 0.0
+                else:
+                    # 数值特征相似度
+                    max_val = max(val1, val2)
+                    min_val = min(val1, val2)
+                    sim = min_val / max_val if max_val > 0 else 1.0
+                similarities.append(sim)
+        
+        return sum(similarities) / len(similarities) if similarities else 0.0
+    
+    def _calculate_lexical_similarity(self, text1: str, text2: str) -> float:
+        """
+        计算词汇相似度
+        """
+        import re
+        
+        # 简单分词
+        def tokenize(text):
+            return re.findall(r'[\u4e00-\u9fa50-9a-zA-Z]+', text)
+        
+        tokens1 = set(tokenize(text1))
+        tokens2 = set(tokenize(text2))
+        
+        if not tokens1 and not tokens2:
+            return 1.0
+        if not tokens1 or not tokens2:
+            return 0.0
+        
+        # Jaccard相似度
+        intersection = len(tokens1 & tokens2)
+        union = len(tokens1 | tokens2)
+        
+        return intersection / union if union > 0 else 0.0
         
     def _detect_evasion_behavior(self, text1: str, text2: str, sim: float) -> Dict[str, bool]:
         """
