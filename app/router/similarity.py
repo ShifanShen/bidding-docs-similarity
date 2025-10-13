@@ -1,28 +1,31 @@
-from fastapi import APIRouter, UploadFile, File, Form, BackgroundTasks, HTTPException
-from fastapi.responses import JSONResponse, StreamingResponse
-from typing import List, Optional
-import os
-from app.service.similarity_service import SimilarityService
+"""
+相似度分析API路由
+"""
 import io
-import openpyxl  # type: ignore
+from typing import List
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi.responses import StreamingResponse
+import openpyxl
+from app.service.similarity_service import SimilarityService
 
-router = APIRouter(prefix="/api/similarity", tags=["similarity"])
-
-# 初始化服务实例
+router = APIRouter(prefix="/api/similarity", tags=["相似度分析"])
 similarity_service = SimilarityService()
 
-# 上传文件接口（支持多文件）
 @router.post("/upload")
 async def upload_files(
     tender_file: UploadFile = File(..., description="招标文件"),
     bid_files: List[UploadFile] = File(..., description="投标文件（可多份）")
 ):
+    """上传招标文件和投标文件"""
     try:
-        tender_path = similarity_service.save_file(await tender_file.read(), tender_file.filename or "tender_file")
-        bid_paths = []
-        for f in bid_files:
-            path = similarity_service.save_file(await f.read(), f.filename or "bid_file")
-            bid_paths.append(path)
+        tender_path = similarity_service.save_file(
+            await tender_file.read(), 
+            tender_file.filename or "tender_file"
+        )
+        bid_paths = [
+            similarity_service.save_file(await f.read(), f.filename or "bid_file")
+            for f in bid_files
+        ]
         return {
             "msg": "文件上传成功",
             "tender_file_path": tender_path,
@@ -31,61 +34,76 @@ async def upload_files(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"文件上传失败: {str(e)}")
 
-# 发起分析接口
 @router.post("/analyze")
 async def analyze_files(
-    background_tasks: BackgroundTasks,
     tender_file_path: str = Form(...),
     bid_file_paths: List[str] = Form(...)
 ):
+    """启动相似度分析任务"""
     try:
         task_id = similarity_service.start_analysis(tender_file_path, bid_file_paths)
         return {"msg": "分析任务已启动", "task_id": task_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"分析任务启动失败: {str(e)}")
 
-# 查询分析结果接口
 @router.get("/result")
 async def get_result(task_id: str):
+    """查询分析结果"""
     try:
         result = similarity_service.get_result(task_id)
         return {"msg": "查询成功", "result": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"查询失败: {str(e)}")
 
-# 导出Excel接口
 @router.get("/export_excel")
 def export_excel(task_id: str):
+    """导出分析结果为Excel文件"""
     result = similarity_service.get_result(task_id)
     if not result or result.get('status') != 'done' or not result.get('result'):
         raise HTTPException(status_code=404, detail="分析结果未找到或未完成")
+    
     data = result['result']
     wb = openpyxl.Workbook()
     ws = wb.active
     assert ws is not None
     ws.title = "雷同片段"
-    ws.append(["投标文件", "页码", "雷同文件", "雷同页码", "相似度", "雷同文本", "语法错误", "规避行为"])
+    
+    # 添加表头
+    ws.append(["投标文件", "页码", "雷同文件", "雷同页码", "相似度", "雷同文本", "语法错误", "规避行为", "几乎相同页面"])
+
+    # 添加相似片段数据
     for d in data.get('details', []):
         evade = []
         if d.get('order_changed'): evade.append('语序规避')
         if d.get('stopword_evade'): evade.append('无意义词插入规避')
+        if d.get('synonym_evade'): evade.append('同义词替换规避')
+        if d.get('semantic_evade'): evade.append('语义规避')
+        
+        # 标记几乎相同页面
+        is_near_identical = "是" if d.get('is_near_identical', False) else "否"
+        
         ws.append([
             d.get('bid_file', ''), d.get('page', ''), d.get('similar_with', ''), d.get('similar_page', ''),
-            d.get('similarity', ''), d.get('text', ''), '\n'.join(d.get('grammar_errors', [])), ','.join(evade)
+            d.get('similarity', ''), d.get('text', ''), '\n'.join(d.get('grammar_errors', [])), ','.join(evade), is_near_identical
         ])
+    
+    # 添加语法错误工作表
     ws2 = wb.create_sheet("相同语法错误")
     ws2.append(["语法错误", "片段内容", "出现位置"])
     for g in data.get('grammar_errors', []):
         locs = '\n'.join([f"{l['bid_file']} 第{l['page']}页" for l in g.get('locations', [])])
         ws2.append([g.get('error', ''), g.get('text', ''), locs])
+    
+    # 生成Excel文件
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
-    return StreamingResponse(buf, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', headers={
-        'Content-Disposition': f'attachment; filename="similarity_result_{task_id}.xlsx"'
-    })
+    return StreamingResponse(
+        buf, 
+        media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers={'Content-Disposition': f'attachment; filename="similarity_result_{task_id}.xlsx"'}
+    )
 
-# 任务管理接口
 @router.get("/tasks")
 async def get_all_tasks():
     """获取所有任务列表"""
@@ -115,3 +133,112 @@ async def cleanup_tasks(max_age_hours: int = Form(24)):
         return {"msg": f"已清理{max_age_hours}小时前的任务"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"清理失败: {str(e)}")
+
+@router.post("/analyze_extracted")
+async def analyze_extracted_texts(extracted_data: dict):
+    """
+    基于已提取的文本数据进行相似度分析
+    
+    请求体格式:
+    {
+        "tender_texts": [
+            {
+                "page": 1,
+                "text": "招标文件文本内容",
+                "is_table_cell": false
+            }
+        ],
+        "bid_files": [
+            {
+                "file_name": "投标文件1.pdf",
+                "texts": [
+                    {
+                        "page": 1,
+                        "text": "投标文件文本内容",
+                        "is_table_cell": false
+                    }
+                ]
+            }
+        ]
+    }
+    """
+    try:
+        # 验证请求数据
+        if not extracted_data:
+            raise HTTPException(status_code=400, detail="请求数据不能为空")
+        
+        # 启动分析任务
+        task_id = similarity_service.start_analysis_from_extracted_texts(extracted_data)
+        
+        return {
+            "msg": "基于提取文本的分析任务已启动",
+            "task_id": task_id
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"数据格式错误: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"分析任务启动失败: {str(e)}")
+
+@router.get("/extracted_texts")
+async def get_extracted_texts_list():
+    """获取已提取的文本文件列表"""
+    try:
+        import os
+        import json
+        from datetime import datetime
+        
+        extracted_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../extracted_texts'))
+        
+        if not os.path.exists(extracted_dir):
+            return {"msg": "查询成功", "files": []}
+        
+        files = []
+        for filename in os.listdir(extracted_dir):
+            if filename.endswith('.json'):
+                file_path = os.path.join(extracted_dir, filename)
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    
+                    # 获取文件信息
+                    file_info = {
+                        "filename": filename,
+                        "task_id": data.get('task_id', ''),
+                        "timestamp": data.get('timestamp', ''),
+                        "tender_file": data.get('tender_file', ''),
+                        "tender_pages": len(data.get('tender_texts', [])),
+                        "bid_files_count": len(data.get('bid_files', [])),
+                        "file_size": os.path.getsize(file_path)
+                    }
+                    files.append(file_info)
+                except Exception as e:
+                    logger.warning(f"读取文件 {filename} 失败: {str(e)}")
+        
+        # 按时间排序
+        files.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+        
+        return {"msg": "查询成功", "files": files}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"查询失败: {str(e)}")
+
+@router.get("/extracted_texts/{filename}")
+async def get_extracted_texts(filename: str):
+    """获取指定提取文本文件的内容"""
+    try:
+        import os
+        import json
+        
+        extracted_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../extracted_texts'))
+        file_path = os.path.join(extracted_dir, filename)
+        
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="文件不存在")
+        
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        return {"msg": "查询成功", "data": data}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"读取文件失败: {str(e)}")

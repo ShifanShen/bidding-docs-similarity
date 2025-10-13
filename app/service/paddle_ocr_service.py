@@ -54,6 +54,12 @@ class PaddleOCRService:
         logger.info(f"开始将PDF页面转换为图像: 文件={os.path.basename(pdf_path)}, 页码={page_num}")
         try:
             doc = fitz.open(pdf_path)
+            total_pages = len(doc)
+            
+            # 检查页面索引是否有效
+            if page_num < 1 or page_num > total_pages:
+                raise IndexError(f"页面索引超出范围: {page_num}，总页数: {total_pages}")
+            
             page = doc[page_num - 1]  # pymupdf的页面索引从0开始
             
             # 设置DPI以获得更好的图像质量
@@ -88,33 +94,69 @@ class PaddleOCRService:
             # 从PaddleOCR结果中提取文本
             text_lines = []
             
-            # 遍历所有结果
-            for result in ocr_result:
-                # 从OCRResult对象中获取JSON数据
-                if hasattr(result, 'json'):
-                    json_data = result.json
+            # 新的PaddleOCR返回格式：OCRResult对象，包含json属性
+            if ocr_result and len(ocr_result) > 0:
+                ocr_result_obj = ocr_result[0]
+                
+                # 检查是否有json属性
+                if hasattr(ocr_result_obj, 'json'):
+                    json_data = ocr_result_obj.json
                     logger.debug(f"JSON数据键: {list(json_data.keys())}")
                     
-                    # 从JSON数据中提取文本
-                    if 'rec_texts' in json_data and json_data['rec_texts']:
+                    # 检查是否有res字段（新的数据格式）
+                    if 'res' in json_data:
+                        res_data = json_data['res']
+                        logger.debug(f"res数据类型: {type(res_data)}")
+                        
+                        # 从res数据中提取文本
+                        if isinstance(res_data, dict) and 'rec_texts' in res_data and res_data['rec_texts']:
+                            rec_texts = res_data['rec_texts']
+                            rec_scores = res_data.get('rec_scores', [])
+                            
+                            logger.debug(f"res中rec_texts数量: {len(rec_texts)}")
+                            logger.debug(f"res中rec_scores数量: {len(rec_scores)}")
+                            
+                            # 确保文本和分数数量一致
+                            min_length = min(len(rec_texts), len(rec_scores)) if rec_scores else len(rec_texts)
+                            
+                            for i in range(min_length):
+                                text_content = rec_texts[i] if i < len(rec_texts) else ""
+                                confidence = rec_scores[i] if i < len(rec_scores) else 1.0
+                                
+                                logger.debug(f"识别文本: '{text_content}', 置信度: {confidence:.3f}")
+                                
+                                # 只保留置信度高于阈值且非空的文本
+                                if confidence >= default_paddle_ocr_config.MIN_CONFIDENCE and text_content.strip():
+                                    text_lines.append(text_content.strip())
+                                    logger.debug(f"✅ 保留文本: '{text_content}'")
+                                else:
+                                    logger.debug(f"❌ 丢弃文本: '{text_content}' (置信度: {confidence:.3f})")
+                        else:
+                            logger.debug("res数据中没有rec_texts或为空")
+                    
+                    # 兼容旧格式：直接从JSON数据中提取文本
+                    elif 'rec_texts' in json_data and json_data['rec_texts']:
                         rec_texts = json_data['rec_texts']
                         rec_scores = json_data.get('rec_scores', [])
                         
-                        logger.debug(f"rec_texts数量: {len(rec_texts)}")
-                        logger.debug(f"rec_scores数量: {len(rec_scores)}")
+                        logger.debug(f"JSON中rec_texts数量: {len(rec_texts)}")
+                        logger.debug(f"JSON中rec_scores数量: {len(rec_scores)}")
                         
                         # 确保文本和分数数量一致
                         min_length = min(len(rec_texts), len(rec_scores)) if rec_scores else len(rec_texts)
                         
                         for i in range(min_length):
                             text_content = rec_texts[i] if i < len(rec_texts) else ""
-                            confidence = rec_scores[i] if i < len(rec_scores) else 1.0  # 如果没有分数，默认置信度为1.0
+                            confidence = rec_scores[i] if i < len(rec_scores) else 1.0
                             
-                            logger.debug(f"文本 {i}: '{text_content}', 置信度: {confidence:.3f}")
+                            logger.debug(f"识别文本: '{text_content}', 置信度: {confidence:.3f}")
                             
-                            # 只保留置信度高于阈值的文本
+                            # 只保留置信度高于阈值且非空的文本
                             if confidence >= default_paddle_ocr_config.MIN_CONFIDENCE and text_content.strip():
                                 text_lines.append(text_content.strip())
+                                logger.debug(f"✅ 保留文本: '{text_content}'")
+                            else:
+                                logger.debug(f"❌ 丢弃文本: '{text_content}' (置信度: {confidence:.3f})")
                     else:
                         logger.debug("JSON数据中没有rec_texts或为空")
             
@@ -123,26 +165,11 @@ class PaddleOCRService:
             logger.debug(f"提取到文本行数: {len(text_lines)}")
             logger.debug(f"合并文本长度: {len(full_text)}")
             
-            # 清理文本中的多余空格
+            # 简单清理文本
             if full_text:
                 import re
-                
-                # 去除行首尾空格并移除空行
-                lines = [line.strip() for line in full_text.split('\n') if line.strip()]
-                
-                # 去除中文字符之间的空格
-                merged_text = ' '.join(lines)
-                merged_text = re.sub(r'([\u4e00-\u9fff])\s+([\u4e00-\u9fff])', r'\1\2', merged_text)
-                
-                # 处理连续的多个空格，保留单个空格
-                merged_text = re.sub(r'\s+', ' ', merged_text)
-                
-                # 在中文句号、问号、感叹号后添加换行
-                merged_text = re.sub(r'([。！？])', r'\1\n', merged_text)
-                
-                # 再次去除行首尾空格并移除空行
-                formatted_lines = [line.strip() for line in merged_text.split('\n') if line.strip()]
-                full_text = '\n'.join(formatted_lines)
+                # 去除多余空格，保留基本格式
+                full_text = re.sub(r'\s+', ' ', full_text).strip()
                 logger.debug("已清理文本中的多余空格")
             
             return full_text
@@ -181,6 +208,46 @@ class PaddleOCRService:
             
         except Exception as e:
             logger.error(f"OCR识别失败 (页面 {page_num}): {str(e)}")
+            return {
+                'text': "",
+                'tables': []
+            }
+    
+    def recognize_image(self, image_path: str) -> Dict[str, Any]:
+        """直接识别图像文件中的文本"""
+        try:
+            logger.info(f"开始OCR图像识别: {os.path.basename(image_path)}")
+            
+            # 读取图像文件
+            from PIL import Image
+            import numpy as np
+            
+            img = Image.open(image_path)
+            img_array = np.array(img)
+            
+            # 调用PaddleOCR进行文本识别
+            logger.info(f"调用PaddleOCR进行图像识别: {os.path.basename(image_path)}")
+            
+            ocr_result = self._ocr.ocr(img_array)
+            
+            # 处理识别结果
+            text = self._process_paddle_ocr_result(ocr_result)
+            
+            logger.debug(f"PaddleOCR图像识别完成，获取到文本")
+            
+            # 处理识别结果
+            text_lines_count = len(text.strip().split('\n')) if text else 0
+            
+            recognized_text_length = len(text.strip())
+            logger.info(f"OCR图像识别完成: 文件={os.path.basename(image_path)}, 识别文本长度={recognized_text_length}, 识别文本行数={text_lines_count}")
+            
+            return {
+                'text': text.strip(),
+                'tables': []  # 不再识别表格，返回空列表
+            }
+            
+        except Exception as e:
+            logger.error(f"OCR图像识别失败: {str(e)}")
             return {
                 'text': "",
                 'tables': []

@@ -1,51 +1,45 @@
+"""
+招标文档相似度分析系统主程序
+"""
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 from app.router import similarity, ocr
-from app.routers import similarity_v2
 from app.config.log_config import log_config
-from app.core.config_manager import config_manager
-import os
 
-# 初始化日志配置
+# 初始化日志
 log_config.setup_logging()
 
-# 获取配置
-config = config_manager.config
-
+# 创建FastAPI应用
 app = FastAPI(
-    title=config.app_name,
-    description="投标文件相似度检测系统",
-    version="2.0.0"
+    title="招标文档相似度分析系统",
+    description="基于AI的招标文档相似度检测和规避行为分析",
+    version="1.0.0"
 )
 
+# 配置CORS中间件
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 允许所有来源请求（可以根据需求修改为指定域名列表）
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # 允许所有请求方法（POST, GET, PUT, DELETE等）
-    allow_headers=["*"],  # 允许所有请求头
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# 挂载静态文件（前端页面）
+# 挂载静态文件
 static_dir = os.path.join(os.path.dirname(__file__), 'static')
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
-# 挂载路由
-app.include_router(similarity.router, tags=["similarity-v1"])
-app.include_router(similarity_v2.router, tags=["similarity-v2"])
-app.include_router(ocr.router, tags=["ocr"])
+# 注册路由
+app.include_router(similarity.router)
+app.include_router(ocr.router)
 
-# 首页路由，返回前端页面
 @app.get("/")
 def root():
+    """首页重定向到前端页面"""
     return RedirectResponse(url="/static/index.html")
-
-# 健康检查
-@app.get("/health")
-def health_check():
-    return {"status": "healthy", "version": "2.0.0"}
 
 if __name__ == "__main__":
     import uvicorn
