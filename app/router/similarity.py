@@ -4,7 +4,7 @@
 import io
 from typing import List
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 import openpyxl
 from app.service.similarity_service import SimilarityService
 
@@ -242,3 +242,68 @@ async def get_extracted_texts(filename: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"读取文件失败: {str(e)}")
+
+
+@router.post("/filter_result")
+async def filter_result(
+    result_file: UploadFile = File(..., description="分析结果JSON文件"),
+    min_similarity: float = Form(0.0)
+):
+    """上传分析结果JSON并按相似度阈值筛选，返回筛选后的JSON。
+
+    仅保留 similarity >= min_similarity 的记录。
+    """
+    try:
+        import json
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        raw = await result_file.read()
+        data = json.loads(raw.decode("utf-8"))
+
+        # 兼容多种JSON格式：{status, result} 或 {msg, result} 或直接结果对象
+        result_obj = data
+        if isinstance(data, dict):
+            if "result" in data and isinstance(data.get("result"), dict):
+                result_obj = data["result"]
+            elif "status" in data and "result" in data.get("result", {}):
+                # 嵌套结构：{status: "done", result: {result: {...}}}
+                result_obj = data.get("result", {}).get("result", data)
+
+        filtered = dict(result_obj)  # 浅拷贝
+        details = list(result_obj.get("details", []))
+        
+        logger.info(f"接收到的JSON: details数量={len(details)}, 原始summary={result_obj.get('summary', 'N/A')}")
+
+        new_details = [
+            d for d in details
+            if float(d.get('similarity', 0.0)) >= float(min_similarity)
+        ]
+
+        filtered["details"] = new_details
+        
+        # 重新计算统计信息
+        total_similarity_count = len(new_details)
+        grammar_errors_count = len(filtered.get("grammar_errors", []))
+        new_summary = f'分析完成，发现{total_similarity_count}处高相似度片段，{grammar_errors_count}组相同语法错误。'
+        filtered["summary"] = new_summary
+        
+        # 重新计算平均和最大相似度
+        if new_details:
+            import numpy as np
+            similarities = [float(d.get('similarity', 0.0)) for d in new_details]
+            filtered["avg_similarity_score"] = float(f'{np.mean(similarities):.4f}')
+            filtered["max_similarity_score"] = float(f'{max(similarities):.4f}')
+        else:
+            filtered["avg_similarity_score"] = 0.0
+            filtered["max_similarity_score"] = 0.0
+        
+        filtered["total_similarity_count"] = total_similarity_count
+        
+        logger.info(f"筛选完成: 原始{len(details)}条 -> 筛选后{total_similarity_count}条, 阈值={min_similarity}")
+        logger.info(f"更新后的summary: {new_summary}")
+        logger.info(f"返回数据中的summary字段: {filtered.get('summary', 'NOT FOUND')}")
+
+        return JSONResponse(content=filtered)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"筛选失败: {str(e)}")

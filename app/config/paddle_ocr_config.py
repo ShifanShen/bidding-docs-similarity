@@ -5,7 +5,12 @@ class PaddleOCRConfig:
     OCR_THRESHOLD = 25  # 当页面文本长度低于此值时，触发OCR识别
     
     # 预处理配置
-    DPI = 300  # 图像分辨率
+    DPI = 300  # 图像分辨率，降低DPI以减少内存使用
+    
+    # 图像尺寸限制
+    MAX_IMAGE_WIDTH = 3000  # 最大图像宽度
+    MAX_IMAGE_HEIGHT = 3000  # 最大图像高度
+    MAX_PIXELS = 9000000  # 最大像素数 (3000x3000)
     
     # PaddleOCR模型配置
     TEXT_DETECTION_MODEL_NAME = "PP-OCRv5_server_det"  # 文本检测模型
@@ -20,7 +25,7 @@ class PaddleOCRConfig:
     LANG = "ch"  # 语言设置，ch为中文，en为英文
     
     # 设备配置
-    DEVICE = "gpu"  # 设备类型，cpu或gpu
+    DEVICE = "cpu"  # 设备类型，改为cpu以减少内存使用
     
     # 后处理配置
     MIN_CONFIDENCE = 0.3  # 最小置信度（降低以处理扫描件）

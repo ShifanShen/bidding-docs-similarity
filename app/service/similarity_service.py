@@ -20,7 +20,8 @@ from sentence_transformers import SentenceTransformer
 from app.service.text_utils import (
     extract_text_from_pdf, extract_text_from_docx, split_text_to_segments,
     remove_stopwords, detect_grammar_errors, is_order_changed,
-    is_stopword_evade, remove_numbers, is_synonym_evade
+    is_stopword_evade, remove_numbers, is_synonym_evade,
+    extract_kv_tables_from_text
 )
 from app.config.similarity_config import default_config
 from app.config.terms_config import COMMON_TERMS
@@ -281,23 +282,61 @@ class SimilarityService:
         if ext == '.pdf':
             pages = extract_text_from_pdf(file_path)
             segments = []
-            for page_data in pages:
+            SEG_DELIM = ('。', '！', '？', '.', '!', '?')
+            auto_merge = getattr(self.config, 'AUTO_MERGE_CROSS_PAGE_PARAGRAPH', False)
+
+            last_unfinished = None
+            for idx, page_data in enumerate(pages):
                 page_num = page_data['page_num']
-                
-                # 处理普通文本
+                segs = []
                 for seg in split_text_to_segments(page_data['text']):
                     clean_seg = remove_stopwords(seg, list(self.stopwords))
                     if clean_seg and len(clean_seg) >= self.min_text_length:
                         grammar_errors = detect_grammar_errors(clean_seg)
-                        segments.append({
+                        segs.append({
                             'page': page_num,
                             'text': clean_seg,
                             'grammar_errors': grammar_errors,
                             'is_table_cell': False
                         })
-                
-                # OCR模式下不处理表格（表格数据为空）
-                # 表格内容已包含在普通文本中
+
+                # 表格（KV块）提取为独立段落，便于专门比较
+                if getattr(self.config, 'ENABLE_TABLE_DETECTION', False):
+                    kv_blocks = extract_kv_tables_from_text(page_data.get('text', '') or '')
+                    for blk in kv_blocks:
+                        # 将items拼接为统一规范文本
+                        items = blk.get('items', {})
+                        if not items:
+                            continue
+                        kv_text = '; '.join([f"{k}={v}" for k, v in items.items()])
+                        if kv_text and len(kv_text) >= self.min_text_length // 3:
+                            grammar_errors = []
+                            segs.append({
+                                'page': page_num,
+                                'text': kv_text,
+                                'grammar_errors': grammar_errors,
+                                'is_table_cell': True,
+                                'is_table_segment': True,
+                                'table_items': items
+                            })
+
+                # 自动合并跨页段落
+                if auto_merge:
+                    if last_unfinished and segs:
+                        # 前一页未完+本页首段
+                        segs[0]['text'] = last_unfinished['text'] + segs[0]['text']
+                        segs[0]['grammar_errors'] = list(set(last_unfinished['grammar_errors'] + segs[0]['grammar_errors']))
+                        last_unfinished = None
+                    # 针对当页最后一段判断是否结尾
+                    if segs:
+                        last_seg = segs[-1]
+                        # 如最后无常见句末标点，则记作未完成
+                        if not last_seg['text'].rstrip().endswith(SEG_DELIM):
+                            last_unfinished = segs.pop()
+                segments.extend(segs)
+            # 处理最后遗留
+            if auto_merge and last_unfinished:
+                segments.append(last_unfinished)
             return segments
         elif ext in ['.doc', '.docx']:
             paras = extract_text_from_docx(file_path)
@@ -471,16 +510,21 @@ class SimilarityService:
         self._log_resource('TASK_START', {'task_id': task_id})
         timeout_flag = {'timeout': False}
         
-        # 设置超时计时器
-        def timeout_callback() -> None:
-            timeout_flag['timeout'] = True
-            self.tasks[task_id]["status"] = "timeout"
-            self.tasks[task_id]["result"] = {"error": f"任务执行超时 ({self.max_task_timeout}秒)"}
-            self._log_resource('TASK_TIMEOUT', {'task_id': task_id})
-            
-        timer = threading.Timer(self.max_task_timeout, timeout_callback)
-        timer.daemon = True
-        timer.start()
+        # 设置超时计时器（仅当MAX_TASK_TIMEOUT > 0时启用）
+        timer = None
+        if self.max_task_timeout > 0:
+            def timeout_callback() -> None:
+                timeout_flag['timeout'] = True
+                self.tasks[task_id]["status"] = "timeout"
+                self.tasks[task_id]["result"] = {"error": f"任务执行超时 ({self.max_task_timeout}秒)"}
+                self._log_resource('TASK_TIMEOUT', {'task_id': task_id})
+                
+            timer = threading.Timer(self.max_task_timeout, timeout_callback)
+            timer.daemon = True
+            timer.start()
+            logger.info(f"任务 {task_id} 启用超时保护: {self.max_task_timeout}秒")
+        else:
+            logger.info(f"任务 {task_id} 无超时限制，支持大规模文档分析")
         
         try:
             # 初始化进度跟踪
@@ -518,7 +562,7 @@ class SimilarityService:
                 bid_file_paths, start_time
             )
             
-            if timeout_flag['timeout']:
+            if self.max_task_timeout > 0 and timeout_flag['timeout']:
                 return
         except Exception as e:
             self.tasks[task_id]["status"] = "error"
@@ -528,7 +572,8 @@ class SimilarityService:
             logging.error(f"Task {task_id} failed with error: {str(e)}", exc_info=True)
         finally:
             try:
-                timer.cancel()
+                if timer is not None:
+                    timer.cancel()
             except Exception:
                 pass
             # 最终清理内存
@@ -544,9 +589,14 @@ class SimilarityService:
         """
         tender_segments = self._extract_and_segment(tender_file_path)
         tender_texts = [seg['text'] for seg in tender_segments]
-        tender_vecs = self._batch_encode(tender_texts) if tender_texts else np.zeros((1, 384))
-        if isinstance(tender_vecs, list):
-            tender_vecs = np.array(tender_vecs)
+        # 确保段落和向量数量一致
+        if tender_texts:
+            tender_vecs = self._batch_encode(tender_texts)
+            if isinstance(tender_vecs, list):
+                tender_vecs = np.array(tender_vecs)
+        else:
+            # 如果没有文本，创建空的向量数组，维度与段落数量一致
+            tender_vecs = np.zeros((0, 384))
         return tender_segments, tender_vecs
         
     def _process_bid_documents(self, bid_file_paths: List[str]) -> Tuple[List[List[Dict[str, Any]]], List[np.ndarray]]:
@@ -558,9 +608,15 @@ class SimilarityService:
         for bid_path in bid_file_paths:
             segs = self._extract_and_segment(bid_path)
             texts = [s['text'] for s in segs]
-            vecs = self._batch_encode(texts) if texts else np.zeros((1, 384))
-            if isinstance(vecs, list):
-                vecs = np.array(vecs)
+            # 确保段落和向量数量一致
+            if texts:
+                vecs = self._batch_encode(texts)
+                if isinstance(vecs, list):
+                    vecs = np.array(vecs)
+            else:
+                # 如果没有文本，创建空的向量数组，维度与段落数量一致
+                vecs = np.zeros((0, 384))
+            
             bid_segments_list.append(segs)
             bid_vecs_list.append(vecs)
             del segs, texts, vecs
@@ -601,11 +657,17 @@ class SimilarityService:
             if keep_idx:
                 # 确保所有索引都在有效范围内
                 valid_keep_idx = [idx for idx in keep_idx if 0 <= idx < len(segs)]
-                filtered_bid_segments.append([segs[idx] for idx in valid_keep_idx])
+                if valid_keep_idx:
+                    filtered_bid_segments.append([segs[idx] for idx in valid_keep_idx])
+                    filtered_bid_vecs.append(vecs[valid_keep_idx])
+                else:
+                    # 如果没有有效索引，添加空的段落和对应的空向量
+                    filtered_bid_segments.append([])
+                    filtered_bid_vecs.append(np.zeros((0, vecs.shape[1] if vecs.shape[0] > 0 else 384)))
             else:
+                # 如果没有保留的索引，添加空的段落和对应的空向量
                 filtered_bid_segments.append([])
-            
-            filtered_bid_vecs.append(vecs[keep_idx] if len(keep_idx) > 0 else np.zeros((1, 384)))
+                filtered_bid_vecs.append(np.zeros((0, vecs.shape[1] if vecs.shape[0] > 0 else 384)))
             del segs, vecs
             self._cleanup_memory()
         
@@ -642,6 +704,8 @@ class SimilarityService:
                 # 确保向量和段落的数量一致
                 if len(segs_i) != vecs_i.shape[0] or len(segs_j) != vecs_j.shape[0]:
                     logger.warning(f"向量和段落数量不匹配: segs_i={len(segs_i)}, vecs_i={vecs_i.shape[0]}, segs_j={len(segs_j)}, vecs_j={vecs_j.shape[0]}")
+                    logger.debug(f"文件i: {bid_file_paths[i] if i < len(bid_file_paths) else 'unknown'}")
+                    logger.debug(f"文件j: {bid_file_paths[j] if j < len(bid_file_paths) else 'unknown'}")
                     progress_cnt += 1
                     self.tasks[task_id]["progress"]["current"] = progress_cnt
                     continue
@@ -878,6 +942,54 @@ class SimilarityService:
             'semantic_evade': evade_results['semantic_evade'],
             'rank': top_k + 1
         }
+
+        # 如果两侧都是表格段，附加表格相似度辅助信息
+        if seg_i.get('is_table_segment') and seg_j.get('is_table_segment'):
+            items_i = seg_i.get('table_items', {})
+            items_j = seg_j.get('table_items', {})
+            keys_i = set(items_i.keys())
+            keys_j = set(items_j.keys())
+            union = keys_i | keys_j
+            inter = keys_i & keys_j
+            param_match_rate = (len(inter) / len(union)) if union else 0.0
+
+            # 数值一致性：相同key下，数值或文本近似
+            def normalize_number(s: str) -> Optional[float]:
+                try:
+                    import re
+                    t = s.replace(',', '')
+                    m = re.search(r"-?\d+(?:\.\d+)?", t)
+                    if not m:
+                        return None
+                    return float(m.group(0))
+                except:
+                    return None
+
+            tol = getattr(self.config, 'TABLE_VALUE_TOLERANCE', 0.02)
+            value_hits = 0
+            value_total = len(inter)
+            for k in inter:
+                vi = items_i.get(k, '')
+                vj = items_j.get(k, '')
+                ni = normalize_number(vi)
+                nj = normalize_number(vj)
+                if ni is not None and nj is not None and nj != 0:
+                    if abs(ni - nj) / max(abs(nj), 1e-9) <= tol:
+                        value_hits += 1
+                else:
+                    # 退化到文本相等判断
+                    if vi.strip() == vj.strip():
+                        value_hits += 1
+            value_match_rate = (value_hits / value_total) if value_total else 0.0
+
+            w_text = getattr(self.config, 'TABLE_TEXT_WEIGHT', 0.4)
+            w_val = getattr(self.config, 'TABLE_VALUE_WEIGHT', 0.6)
+            table_similarity = float(f'{(w_text * float(detail["similarity"]) + w_val * value_match_rate):.4f}')
+
+            detail['is_table_segment'] = True
+            detail['param_match_rate'] = float(f'{param_match_rate:.4f}')
+            detail['value_match_rate'] = float(f'{value_match_rate:.4f}')
+            detail['table_similarity'] = table_similarity
         
         return detail
         
@@ -941,6 +1053,25 @@ class SimilarityService:
         
         elapsed = time.time() - start_time
         self._log_resource('TASK_DONE', {'task_id': task_id, 'elapsed': f'{elapsed:.1f}s'})
+
+        # 结果持久化：保存到 saved_results 目录，命名风格与 extracted_texts 一致
+        try:
+            results_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../saved_results'))
+            os.makedirs(results_dir, exist_ok=True)
+
+            # 从任务信息中拿到招标文件名（在start_analysis处保存过）
+            tender_file = self.tasks.get(task_id, {}).get('file_info', {}).get('tender_file', 'result')
+            tender_filename = os.path.splitext(os.path.basename(tender_file))[0]
+            safe_filename = tender_filename.replace('..', '_').replace('/', '_').replace('\\', '_')
+            timestamp = time.strftime('%Y%m%d_%H%M%S')
+            filename = f"{safe_filename}_{task_id}_{timestamp}.json"
+            out_path = os.path.join(results_dir, filename)
+
+            with open(out_path, 'w', encoding='utf-8') as f:
+                json.dump(self.tasks[task_id]['result'], f, ensure_ascii=False, indent=2)
+            logger.info(f"分析结果已保存: {out_path}")
+        except Exception as e:
+            logger.error(f"保存分析结果失败: {str(e)}")
 
     def get_result(self, task_id: str) -> Dict[str, Any]:
         """

@@ -50,7 +50,7 @@ class PaddleOCRService:
         return self._is_initialized
     
     def _pdf_page_to_image(self, pdf_path: str, page_num: int) -> np.ndarray:
-        """使用pymupdf将PDF页面转换为图像"""
+        """使用pymupdf将PDF页面转换为图像，支持大尺寸图像智能缩放"""
         logger.info(f"开始将PDF页面转换为图像: 文件={os.path.basename(pdf_path)}, 页码={page_num}")
         try:
             doc = fitz.open(pdf_path)
@@ -62,20 +62,54 @@ class PaddleOCRService:
             
             page = doc[page_num - 1]  # pymupdf的页面索引从0开始
             
-            # 设置DPI以获得更好的图像质量
-            zoom = default_paddle_ocr_config.DPI / 72  # 72是PDF的默认DPI
-            mat = fitz.Matrix(zoom, zoom)
+            # 获取页面原始尺寸
+            page_rect = page.rect
+            original_width = page_rect.width
+            original_height = page_rect.height
             
-            logger.debug(f"PDF转图像配置: DPI={default_paddle_ocr_config.DPI}, 缩放比例={zoom}")
+            # 计算合适的DPI，确保图像尺寸不超过限制
+            max_width = default_paddle_ocr_config.MAX_IMAGE_WIDTH
+            max_height = default_paddle_ocr_config.MAX_IMAGE_HEIGHT
+            
+            # 计算缩放比例
+            scale_x = max_width / original_width
+            scale_y = max_height / original_height
+            scale = min(scale_x, scale_y, 1.0)  # 不超过原始尺寸
+            
+            # 计算实际DPI
+            actual_dpi = default_paddle_ocr_config.DPI * scale
+            zoom = actual_dpi / 72  # 72是PDF的默认DPI
+            
+            logger.debug(f"图像尺寸控制: 原始尺寸={original_width:.0f}x{original_height:.0f}, "
+                        f"最大限制={max_width}x{max_height}, 缩放比例={scale:.3f}, "
+                        f"实际DPI={actual_dpi:.0f}")
+            
+            mat = fitz.Matrix(zoom, zoom)
             pix = page.get_pixmap(matrix=mat)
             
             # 转换为PIL图像
             img = Image.open(io.BytesIO(pix.tobytes()))
+            
+            # 检查最终图像尺寸
+            final_width, final_height = img.size
+            final_pixels = final_width * final_height
+            
+            if final_pixels > default_paddle_ocr_config.MAX_PIXELS:
+                logger.warning(f"图像尺寸仍然过大: {final_width}x{final_height} ({final_pixels}像素), "
+                             f"最大限制: {default_paddle_ocr_config.MAX_PIXELS}像素")
+                # 进一步缩放
+                scale_factor = (default_paddle_ocr_config.MAX_PIXELS / final_pixels) ** 0.5
+                new_width = int(final_width * scale_factor)
+                new_height = int(final_height * scale_factor)
+                img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                logger.info(f"图像已进一步缩放至: {new_width}x{new_height}")
+            
             # 转换为numpy数组
             img_array = np.array(img)
             
             doc.close()
-            logger.info(f"PDF页面转换为图像成功: 文件={os.path.basename(pdf_path)}, 页码={page_num}, 图像尺寸={img_array.shape}")
+            logger.info(f"PDF页面转换为图像成功: 文件={os.path.basename(pdf_path)}, 页码={page_num}, "
+                       f"最终图像尺寸={img_array.shape}")
             return img_array
         except Exception as e:
             logger.error(f"PDF页面转换为图像失败: 文件={os.path.basename(pdf_path)}, 页码={page_num}, 错误={str(e)}")
@@ -160,18 +194,16 @@ class PaddleOCRService:
                     else:
                         logger.debug("JSON数据中没有rec_texts或为空")
             
-            # 合并所有文本行
-            full_text = '\n'.join(text_lines)
+            # 合并所有文本行，保留换行，仅折叠行内多空格
             logger.debug(f"提取到文本行数: {len(text_lines)}")
-            logger.debug(f"合并文本长度: {len(full_text)}")
-            
-            # 简单清理文本
-            if full_text:
+            if text_lines:
                 import re
-                # 去除多余空格，保留基本格式
-                full_text = re.sub(r'\s+', ' ', full_text).strip()
-                logger.debug("已清理文本中的多余空格")
-            
+                normalized_lines = [re.sub(r'[ \t]+', ' ', ln).strip() for ln in text_lines if ln and ln.strip()]
+                full_text = '\n'.join(normalized_lines).strip()
+                logger.debug(f"合并后文本长度: {len(full_text)}")
+            else:
+                full_text = ""
+
             return full_text
             
         except Exception as e:
@@ -179,16 +211,32 @@ class PaddleOCRService:
             return ""
     
     def recognize_text(self, pdf_path: str, page_num: int) -> Dict[str, Any]:
-        """识别PDF页面中的文本，使用PaddleOCR"""
+        """识别PDF页面中的文本，使用PaddleOCR，支持内存优化和错误恢复"""
         try:
             logger.info(f"开始OCR文本识别: 文件={os.path.basename(pdf_path)}, 页码={page_num}")
             
-            img_array = self._pdf_page_to_image(pdf_path, page_num)
+            # 尝试获取图像，如果失败则使用降级策略
+            try:
+                img_array = self._pdf_page_to_image(pdf_path, page_num)
+            except Exception as img_error:
+                logger.warning(f"图像转换失败，尝试降级处理: {str(img_error)}")
+                # 使用更保守的设置重试
+                img_array = self._pdf_page_to_image_fallback(pdf_path, page_num)
             
             # 调用PaddleOCR进行文本识别
             logger.info(f"调用PaddleOCR进行文本识别: 文件={os.path.basename(pdf_path)}, 页码={page_num}")
             
-            ocr_result = self._ocr.ocr(img_array)
+            try:
+                ocr_result = self._ocr.ocr(img_array)
+            except Exception as ocr_error:
+                logger.error(f"PaddleOCR处理失败: {str(ocr_error)}")
+                # 如果是内存错误，尝试进一步缩小图像
+                if "allocate" in str(ocr_error).lower() or "memory" in str(ocr_error).lower():
+                    logger.info("检测到内存错误，尝试使用更小的图像重试")
+                    img_array = self._pdf_page_to_image_fallback(pdf_path, page_num, aggressive=True)
+                    ocr_result = self._ocr.ocr(img_array)
+                else:
+                    raise ocr_error
             
             # 处理识别结果
             text = self._process_paddle_ocr_result(ocr_result)
@@ -212,6 +260,60 @@ class PaddleOCRService:
                 'text': "",
                 'tables': []
             }
+    
+    def _pdf_page_to_image_fallback(self, pdf_path: str, page_num: int, aggressive: bool = False) -> np.ndarray:
+        """降级图像转换方法，使用更保守的设置"""
+        logger.info(f"使用降级图像转换: 文件={os.path.basename(pdf_path)}, 页码={page_num}, 激进模式={aggressive}")
+        try:
+            doc = fitz.open(pdf_path)
+            page = doc[page_num - 1]
+            
+            # 使用更保守的DPI设置
+            if aggressive:
+                fallback_dpi = 150  # 更低的DPI
+                max_size = 2000  # 更小的最大尺寸
+            else:
+                fallback_dpi = 200
+                max_size = 2500
+            
+            # 获取页面尺寸并计算缩放
+            page_rect = page.rect
+            original_width = page_rect.width
+            original_height = page_rect.height
+            
+            scale_x = max_size / original_width
+            scale_y = max_size / original_height
+            scale = min(scale_x, scale_y, 1.0)
+            
+            actual_dpi = fallback_dpi * scale
+            zoom = actual_dpi / 72
+            
+            logger.debug(f"降级转换: 原始={original_width:.0f}x{original_height:.0f}, "
+                        f"缩放={scale:.3f}, DPI={actual_dpi:.0f}")
+            
+            mat = fitz.Matrix(zoom, zoom)
+            pix = page.get_pixmap(matrix=mat)
+            
+            img = Image.open(io.BytesIO(pix.tobytes()))
+            
+            # 确保图像不会太大
+            final_width, final_height = img.size
+            if final_width * final_height > max_size * max_size:
+                scale_factor = (max_size * max_size / (final_width * final_height)) ** 0.5
+                new_width = int(final_width * scale_factor)
+                new_height = int(final_height * scale_factor)
+                img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                logger.info(f"降级图像进一步缩放至: {new_width}x{new_height}")
+            
+            img_array = np.array(img)
+            doc.close()
+            
+            logger.info(f"降级图像转换成功: 最终尺寸={img_array.shape}")
+            return img_array
+            
+        except Exception as e:
+            logger.error(f"降级图像转换失败: {str(e)}")
+            raise
     
     def recognize_image(self, image_path: str) -> Dict[str, Any]:
         """直接识别图像文件中的文本"""

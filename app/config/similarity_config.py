@@ -11,7 +11,7 @@ class SimilarityConfig:
     
     # 并发控制
     MAX_CONCURRENT_TASKS = 3
-    MAX_TASK_TIMEOUT = 1200  # 秒
+    MAX_TASK_TIMEOUT = 0  # 秒，0表示无超时限制，支持千页级文档分析
     
     # 文本处理配置
     MIN_TEXT_LENGTH = 100  # 最小文本长度阈值
@@ -22,10 +22,17 @@ class SimilarityConfig:
     # 检测模式配置
     DETECTION_MODE = "page"  # 检测模式: "paragraph"(段落), "page"(整页), "sentence"(句子)
     PAGE_LEVEL_DETECTION = True  # 是否启用整页级别检测
+
+    # 表格检测配置（MVP）
+    ENABLE_TABLE_DETECTION = False  # 是否启用表格抄袭检测（基于文本的KV抽取）
+    TABLE_MIN_ROWS = 3  # 判定为表格块的最少连续KV行数
+    TABLE_VALUE_TOLERANCE = 0.02  # 数值相对误差容忍（2%）
+    TABLE_TEXT_WEIGHT = 0.4  # 表格文本embedding相似度权重
+    TABLE_VALUE_WEIGHT = 0.6  # 表格数值/参数匹配权重
     
     # 相似度阈值配置
     TENDER_SIMILARITY_THRESHOLD = 0.6  # 与招标文件相似度的剔除阈值
-    BID_SIMILARITY_THRESHOLD = 0.90  # 投标文件间相似度的检测阈值 - 提高以检测几乎相同的页面
+    BID_SIMILARITY_THRESHOLD = 0.9  # 投标文件间相似度的检测阈值 - 提高以检测几乎相同的页面
     NEAR_IDENTICAL_THRESHOLD = 0.95  # 几乎相同页面的检测阈值
     HIGH_SIMILARITY_THRESHOLD = 0.99  # 高相似度阈值
     VERY_HIGH_SIMILARITY_THRESHOLD = 0.995  # 极高相似度阈值

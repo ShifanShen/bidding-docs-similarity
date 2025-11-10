@@ -96,6 +96,55 @@ def _extract_with_pdfplumber(pdf_path: str) -> List[Dict[str, Any]]:
             pages.append(page_data)
     return pages
 
+def extract_kv_tables_from_text(text: str) -> List[Dict[str, Any]]:
+    """基于规则从页面文本中抽取近似表格的KV块（最小可用版本）。
+
+    规则：
+    - 按行遍历，识别两列样式：
+      1) key: value 或 key：value
+      2) key  [2个及以上空格]  value
+    - 连续满足规则的行数 >= TABLE_MIN_ROWS 视为一个表格块。
+    - 返回items（dict）与raw_rows（原始行）。同key保留首次出现的值。
+    """
+    min_rows = getattr(default_config, 'TABLE_MIN_ROWS', 3)
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    blocks: List[Dict[str, Any]] = []
+
+    def parse_kv(line: str) -> Optional[tuple]:
+        # 模式1：冒号
+        m = re.match(r"^(.{1,40})[：:]\s*(.+)$", line)
+        if m:
+            return m.group(1).strip(), m.group(2).strip()
+        # 模式2：多空格分列
+        m2 = re.match(r"^(.{1,40}?)[\t ]{2,}(.+)$", line)
+        if m2:
+            return m2.group(1).strip(), m2.group(2).strip()
+        return None
+
+    current_rows = []
+    current_items: Dict[str, str] = {}
+
+    def flush_block():
+        nonlocal current_rows, current_items
+        if len(current_rows) >= min_rows and current_items:
+            blocks.append({'items': dict(current_items), 'raw_rows': list(current_rows)})
+        current_rows = []
+        current_items = {}
+
+    for line in lines:
+        kv = parse_kv(line)
+        if kv:
+            k, v = kv
+            if k not in current_items:
+                current_items[k] = v
+            current_rows.append(line)
+        else:
+            # 断开
+            flush_block()
+    flush_block()
+
+    return blocks
+
 def extract_text_from_docx(docx_path: str) -> List[str]:
     """从Word文件中按段落提取文本"""
     doc = docx.Document(docx_path)
