@@ -5,7 +5,7 @@ services:
     build: .
     container_name: bidding-similarity-app
     ports:
-      - "8000:8000"
+      - "8020:8020"
     volumes:
       # 挂载本地模型目录
       - ./local_text2vec_model:/app/local_text2vec_model:ro

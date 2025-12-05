@@ -91,10 +91,10 @@ docker compose up --build -d
 
 1) 环境准备
 
-- Python ≥ 3.12
+- Python ≥ 3.10
 - 系统依赖：
-  - Debian/Ubuntu: `sudo apt-get install gcc g++ tesseract-ocr tesseract-ocr-chi-sim libgl1-mesa-glx`
-  - CentOS/RHEL: `sudo yum install gcc gcc-c++ tesseract tesseract-langpack-chi_sim mesa-libGL`
+  - Debian/Ubuntu: `sudo apt-get install gcc g++ libgl1-mesa-glx libglib2.0-0`
+  - CentOS/RHEL: `sudo yum install gcc gcc-c++ mesa-libGL glib2`
   - Windows: 安装 PaddleOCR 运行所需依赖，确保可用的 CPU 版本 PaddlePaddle
 
 2) 安装依赖（基于 pyproject）
