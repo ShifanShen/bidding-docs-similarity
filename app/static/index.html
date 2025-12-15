@@ -90,10 +90,10 @@ function showTaskManager() {
 
 async function loadTasks() {
     try {
-        const resp = await fetch('/api/similarity/tasks');
+        const resp = await fetch('/api/analyze/tasks');
         const data = await resp.json();
-        if (data.tasks) {
-            displayTasks(data.tasks);
+        if (data.data && data.data.tasks) {
+            displayTasks(data.data.tasks);
         }
     } catch (e) {
         document.getElementById('task-list').innerHTML = '<div class="text-danger">加载任务失败</div>';
@@ -139,14 +139,13 @@ function displayTasks(tasks) {
 async function cancelTask(taskId) {
     if (!confirm('确定要取消这个任务吗？')) return;
     try {
-        const formData = new FormData();
-        formData.append('task_id', taskId);
-        const resp = await fetch('/api/similarity/cancel_task', {
+        const resp = await fetch('/api/analyze/cancel', {
             method: 'POST',
-            body: formData
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ task_id: taskId })
         });
         const data = await resp.json();
-        alert(data.msg);
+        alert(data.msg || '取消完成');
         loadTasks();
     } catch (e) {
         alert('取消失败: ' + e.message);
@@ -155,12 +154,12 @@ async function cancelTask(taskId) {
 
 async function viewResult(taskId) {
     try {
-        const resp = await fetch(`/api/similarity/result?task_id=${taskId}`);
+        const resp = await fetch(`/api/analyze/result?task_id=${taskId}`);
         const data = await resp.json();
-        if (data.result && data.result.status === 'done') {
+        if (data.data && data.data.status === 'done') {
             const modal = bootstrap.Modal.getInstance(document.getElementById('taskModal'));
             if (modal) modal.hide();
-            showResult(data.result.result);
+            showResult(data.data.result);
             lastTaskId = taskId;
         } else {
             alert('任务未完成或结果不存在');
@@ -189,37 +188,41 @@ document.getElementById('upload-form').onsubmit = async function(e) {
     progressBar.style.width = '10%';
     progressBar.innerText = '上传中...';
 
-    // 1. 上传文件
+    // 1. 上传文件（新版统一上传，默认第一个为招标文件，其余为投标文件）
     const formData = new FormData();
-    formData.append('tender_file', tenderFile);
+    formData.append('files', tenderFile);
     for (let i = 0; i < bidFiles.length; i++) {
-        formData.append('bid_files', bidFiles[i]);
+        formData.append('files', bidFiles[i]);
     }
-    let uploadResp = await fetch('/api/similarity/upload', {
+    let uploadResp = await fetch('/api/upload/files', {
         method: 'POST',
         body: formData
     });
     let uploadData = await uploadResp.json();
-    if (!uploadData.tender_file_path || !uploadData.bid_file_paths) {
+    const filePaths = uploadData?.data?.file_paths || [];
+    if (filePaths.length < 2) {
         alert('文件上传失败');
         progressDiv.style.display = 'none';
         return;
     }
+    const tenderPath = filePaths[0];
+    const bidPaths = filePaths.slice(1);
     progressBar.style.width = '40%';
     progressBar.innerText = '分析任务启动中...';
 
     // 2. 发起分析
-    const analyzeForm = new FormData();
-    analyzeForm.append('tender_file_path', uploadData.tender_file_path);
-    for (const p of uploadData.bid_file_paths) {
-        analyzeForm.append('bid_file_paths', p);
-    }
-    let analyzeResp = await fetch('/api/similarity/analyze', {
+    const analyzePayload = {
+        tender_file_path: tenderPath,
+        bid_file_paths: bidPaths
+    };
+    let analyzeResp = await fetch('/api/analyze/start', {
         method: 'POST',
-        body: analyzeForm
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(analyzePayload)
     });
     let analyzeData = await analyzeResp.json();
-    if (!analyzeData.task_id) {
+    const taskId = analyzeData?.data?.task_id;
+    if (!taskId) {
         alert('分析任务启动失败');
         progressDiv.style.display = 'none';
         return;
@@ -228,26 +231,25 @@ document.getElementById('upload-form').onsubmit = async function(e) {
     progressBar.innerText = '分析中...';
 
     // 3. 轮询进度与结果
-    let taskId = analyzeData.task_id;
     let finished = false;
     while (!finished) {
         await new Promise(r => setTimeout(r, 2000));
-        let resultResp = await fetch(`/api/similarity/result?task_id=${taskId}`);
+        let resultResp = await fetch(`/api/analyze/result?task_id=${taskId}`);
         let resultData = await resultResp.json();
-        if (resultData.result && resultData.result.status === 'done') {
+        if (resultData.data && resultData.data.status === 'done') {
             finished = true;
             progressBar.style.width = '100%';
             progressBar.innerText = '分析完成';
-            showResult(resultData.result.result);
+            showResult(resultData.data.result);
             lastTaskId = taskId;
             document.getElementById('export-btn').style.display = '';
             document.getElementById('export-excel-btn').style.display = '';
-        } else if (resultData.result && resultData.result.status === 'error') {
+        } else if (resultData.data && resultData.data.status === 'error') {
             finished = true;
             progressBar.style.width = '100%';
             progressBar.classList.add('bg-danger');
             progressBar.innerText = '分析失败';
-            alert('分析失败: ' + (resultData.result.result?.error || '未知错误'));
+            alert('分析失败: ' + (resultData.data.result?.error || '未知错误'));
         } else {
             // 可选：更新进度条
             progressBar.style.width = '80%';
@@ -303,11 +305,11 @@ function showResult(result) {
 // ========== 导出功能 ==========
 document.getElementById('export-btn').onclick = function() {
     if (!lastTaskId) return;
-    fetch(`/api/similarity/result?task_id=${lastTaskId}`)
+    fetch(`/api/analyze/result?task_id=${lastTaskId}`)
         .then(resp => resp.json())
         .then(data => {
-            if (data.result && data.result.result) {
-                const blob = new Blob([JSON.stringify(data.result.result, null, 2)], {type: 'application/json'});
+            if (data.data && data.data.result) {
+                const blob = new Blob([JSON.stringify(data.data.result, null, 2)], {type: 'application/json'});
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
@@ -319,7 +321,7 @@ document.getElementById('export-btn').onclick = function() {
 };
 document.getElementById('export-excel-btn').onclick = function() {
     if (!lastTaskId) return;
-    window.open(`/api/similarity/export_excel?task_id=${lastTaskId}`);
+    window.open(`/api/analyze/export?task_id=${lastTaskId}`);
 };
 
 // ========== 筛选结果：前端上传JSON并调用过滤API ==========
@@ -333,7 +335,7 @@ document.getElementById('filter-form').onsubmit = async function(e) {
     fd.append('result_file', file);
     fd.append('min_similarity', minSim);
 
-    const resp = await fetch('/api/similarity/filter_result', { method: 'POST', body: fd });
+    const resp = await fetch('/api/analyze/filter', { method: 'POST', body: fd });
     if (!resp.ok) { 
         const errorText = await resp.text();
         alert('筛选失败: ' + errorText);
@@ -365,8 +367,9 @@ document.getElementById('filter-form').onsubmit = async function(e) {
 
 function showFilteredPreview(result) {
     const box = document.getElementById('filter-preview');
-    const details = result && result.details ? result.details : [];
-    const summary = result && result.summary ? result.summary : '';
+    const data = result && result.data ? result.data : result || {};
+    const details = data.details || [];
+    const summary = data.summary || '';
     let html = '';
     if (summary) {
         html += `<div class="alert alert-success">${summary}</div>`;

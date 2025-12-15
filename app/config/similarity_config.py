@@ -15,13 +15,16 @@ class SimilarityConfig:
     
     # 文本处理配置
     MIN_TEXT_LENGTH = 100  # 最小文本长度阈值
-    MIN_SEGMENT_LENGTH = 300  # 最小段落长度阈值（同一页内上下文感知）- 进一步增加以保持更大段落
+    MIN_SEGMENT_LENGTH = 100  # 最小段落长度阈值（同一页内上下文感知）- 进一步增加以保持更大段落
     MAX_SEGMENT_LENGTH = 1200  # 最大段落长度阈值（同一页内上下文感知）- 支持大段落检测
     BATCH_SIZE = 1000  # 批量处理大小
     
+    # OCR配置
+    ENABLE_OCR = False  # 是否启用OCR提取（True使用PaddleOCR，False使用pdfplumber）
+    
     # 检测模式配置
-    DETECTION_MODE = "page"  # 检测模式: "paragraph"(段落), "page"(整页), "sentence"(句子)
-    PAGE_LEVEL_DETECTION = True  # 是否启用整页级别检测
+    DETECTION_MODE = "paragraph"  # 检测模式: "paragraph"(段落), "page"(整页), "sentence"(句子)
+    PAGE_LEVEL_DETECTION = False  # 是否启用整页级别检测
 
     # 表格检测配置（MVP）
     ENABLE_TABLE_DETECTION = False  # 是否启用表格抄袭检测（基于文本的KV抽取）

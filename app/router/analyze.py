@@ -1,73 +1,35 @@
 """
 相似度分析API路由
-提供招标文档相似度检测和规避行为分析的HTTP接口
+提供文档相似度检测和规避行为分析功能
 """
 import io
 import json
 import logging
 import os
 from typing import List, Optional
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Body, Query
+from fastapi import APIRouter, UploadFile, File, HTTPException, Body, Query, Form
 from fastapi.responses import StreamingResponse, JSONResponse
 import openpyxl
 from app.service.similarity_service import SimilarityService
 from app.models.schemas import (
-    FileUploadResponse, AnalyzeRequest, AnalyzeResponse, ResultResponse,
+    AnalyzeRequest, AnalyzeResponse, ResultResponse,
     TaskListResponse, CancelTaskRequest, CancelTaskResponse, CleanupTasksRequest,
     CleanupTasksResponse, AnalyzeExtractedRequest, FilterResultRequest
 )
 from app.models.errors import ErrorCode, ErrorMessage, get_error_response
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/similarity", tags=["相似度分析"])
+router = APIRouter(prefix="/api/analyze", tags=["相似度分析"])
 similarity_service = SimilarityService()
 
 
 @router.post(
-    "/upload",
-    response_model=FileUploadResponse,
-    summary="上传文件",
-    description="上传招标/投标文件（multipart/form-data: tender_file, bid_files）"
-)
-async def upload_files(
-    tender_file: UploadFile = File(..., description="招标文件（PDF或Word）"),
-    bid_files: List[UploadFile] = File(..., description="投标文件列表（可多份，PDF或Word）")
-):
-    """上传招标文件和投标文件"""
-    try:
-        tender_path = similarity_service.save_file(
-            await tender_file.read(), 
-            tender_file.filename or "tender_file"
-        )
-        bid_paths = [
-            similarity_service.save_file(await f.read(), f.filename or "bid_file")
-            for f in bid_files
-        ]
-        return FileUploadResponse(
-            code=ErrorCode.SUCCESS,
-            msg=ErrorMessage.SUCCESS,
-            data={
-                "tender_file_path": tender_path,
-                "bid_file_paths": bid_paths
-            }
-        )
-    except Exception as e:
-        logger.error(f"文件上传失败: {str(e)}")
-        raise HTTPException(
-            status_code=ErrorCode.INTERNAL_ERROR,
-            detail=get_error_response(ErrorCode.INTERNAL_ERROR, ErrorMessage.FILE_UPLOAD_FAILED, str(e))
-        )
-
-
-@router.post(
-    "/analyze",
+    "/start",
     response_model=AnalyzeResponse,
     summary="启动相似度分析",
-    description="启动分析（JSON: tender_file_path, bid_file_paths）"
+    description="启动分析（JSON：tender_file_path, bid_file_paths）"
 )
-async def analyze_files(
-    request: AnalyzeRequest = Body(..., description="分析请求参数")
-):
+async def start_analysis(request: AnalyzeRequest):
     """启动相似度分析任务"""
     try:
         task_id = similarity_service.start_analysis(
@@ -126,7 +88,7 @@ async def get_result(
 
 
 @router.get(
-    "/export_excel",
+    "/export",
     summary="导出Excel结果",
     description="按 task_id 导出Excel"
 )
@@ -159,7 +121,6 @@ def export_excel(
             if d.get('synonym_evade'): evade.append('同义词替换规避')
             if d.get('semantic_evade'): evade.append('语义规避')
             
-            # 标记几乎相同页面
             is_near_identical = "是" if d.get('is_near_identical', False) else "否"
             
             ws.append([
@@ -179,7 +140,7 @@ def export_excel(
         wb.save(buf)
         buf.seek(0)
         return StreamingResponse(
-            buf, 
+            buf,
             media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             headers={'Content-Disposition': f'attachment; filename="similarity_result_{task_id}.xlsx"'}
         )
@@ -217,31 +178,15 @@ async def get_all_tasks():
 
 
 @router.post(
-    "/cancel_task",
+    "/cancel",
     response_model=CancelTaskResponse,
     summary="取消任务",
-    description="取消任务（JSON或表单：task_id）"
+    description="取消任务（JSON：task_id）"
 )
-async def cancel_task(
-    request: Optional[CancelTaskRequest] = Body(None, description="取消任务请求（JSON格式）"),
-    task_id: Optional[str] = Form(None, description="任务ID（表单格式）")
-):
+async def cancel_task(request: CancelTaskRequest):
     """取消指定任务"""
     try:
-        # 支持JSON和Form两种格式
-        task_id_value = None
-        if request:
-            task_id_value = request.task_id
-        elif task_id:
-            task_id_value = task_id
-        
-        if not task_id_value:
-            raise HTTPException(
-                status_code=ErrorCode.BAD_REQUEST,
-                detail=get_error_response(ErrorCode.BAD_REQUEST, "task_id参数不能为空")
-            )
-        
-        success = similarity_service.cancel_task(task_id_value)
+        success = similarity_service.cancel_task(request.task_id)
         if success:
             return CancelTaskResponse(
                 code=ErrorCode.SUCCESS,
@@ -263,24 +208,18 @@ async def cancel_task(
 
 
 @router.post(
-    "/cleanup_tasks",
+    "/cleanup",
     response_model=CleanupTasksResponse,
     summary="清理过期任务",
-    description="清理任务（JSON或表单：max_age_hours）"
+    description="清理任务（JSON：max_age_hours）"
 )
-async def cleanup_tasks(
-    request: Optional[CleanupTasksRequest] = Body(None, description="清理任务请求（JSON格式）"),
-    max_age_hours: Optional[int] = Form(24, description="最大保留时间（小时，表单格式）", ge=1, le=720)
-):
+async def cleanup_tasks(request: CleanupTasksRequest):
     """清理过期任务"""
     try:
-        # 支持JSON和Form两种格式
-        hours = request.max_age_hours if request else (max_age_hours if max_age_hours is not None else 24)
-        
-        similarity_service.cleanup_old_tasks(hours)
+        similarity_service.cleanup_old_tasks(request.max_age_hours)
         return CleanupTasksResponse(
             code=ErrorCode.SUCCESS,
-            msg=f"已清理{hours}小时前的任务"
+            msg=f"已清理{request.max_age_hours}小时前的任务"
         )
     except Exception as e:
         logger.error(f"清理失败: {str(e)}")
@@ -291,10 +230,10 @@ async def cleanup_tasks(
 
 
 @router.post(
-    "/analyze_extracted",
+    "/from-extracted",
     response_model=AnalyzeResponse,
     summary="基于已提取文本分析",
-    description="使用已提取文本启动分析（JSON）"
+    description="使用已提取文本启动分析"
 )
 async def analyze_extracted_texts(request: AnalyzeExtractedRequest):
     """基于已提取的文本数据进行相似度分析"""
@@ -327,98 +266,10 @@ async def analyze_extracted_texts(request: AnalyzeExtractedRequest):
         )
 
 
-@router.get(
-    "/extracted_texts",
-    summary="获取已提取文本文件列表",
-    description="列出已提取文本文件"
-)
-async def get_extracted_texts_list():
-    """获取已提取的文本文件列表"""
-    try:
-        extracted_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../extracted_texts'))
-        
-        if not os.path.exists(extracted_dir):
-            return JSONResponse(content={
-                "code": ErrorCode.SUCCESS,
-                "msg": ErrorMessage.SUCCESS,
-                "data": {"files": []}
-            })
-        
-        files = []
-        for filename in os.listdir(extracted_dir):
-            if filename.endswith('.json'):
-                file_path = os.path.join(extracted_dir, filename)
-                try:
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-                    
-                    file_info = {
-                        "filename": filename,
-                        "task_id": data.get('task_id', ''),
-                        "timestamp": data.get('timestamp', ''),
-                        "tender_file": data.get('tender_file', ''),
-                        "tender_pages": len(data.get('tender_texts', [])),
-                        "bid_files_count": len(data.get('bid_files', [])),
-                        "file_size": os.path.getsize(file_path)
-                    }
-                    files.append(file_info)
-                except Exception as e:
-                    logger.warning(f"读取文件 {filename} 失败: {str(e)}")
-        
-        files.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
-        
-        return JSONResponse(content={
-            "code": ErrorCode.SUCCESS,
-            "msg": ErrorMessage.SUCCESS,
-            "data": {"files": files}
-        })
-    except Exception as e:
-        logger.error(f"查询失败: {str(e)}")
-        raise HTTPException(
-            status_code=ErrorCode.INTERNAL_ERROR,
-            detail=get_error_response(ErrorCode.INTERNAL_ERROR, "查询失败", str(e))
-        )
-
-
-@router.get(
-    "/extracted_texts/{filename}",
-    summary="获取指定提取文本文件内容",
-    description="获取指定提取文本文件内容"
-)
-async def get_extracted_texts(filename: str):
-    """获取指定提取文本文件的内容"""
-    try:
-        extracted_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../extracted_texts'))
-        file_path = os.path.join(extracted_dir, filename)
-        
-        if not os.path.exists(file_path):
-            raise HTTPException(
-                status_code=ErrorCode.NOT_FOUND,
-                detail=get_error_response(ErrorCode.NOT_FOUND, ErrorMessage.FILE_NOT_FOUND)
-            )
-        
-        with open(file_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        
-        return JSONResponse(content={
-            "code": ErrorCode.SUCCESS,
-            "msg": ErrorMessage.SUCCESS,
-            "data": data
-        })
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"读取文件失败: {str(e)}")
-        raise HTTPException(
-            status_code=ErrorCode.INTERNAL_ERROR,
-            detail=get_error_response(ErrorCode.INTERNAL_ERROR, "读取文件失败", str(e))
-        )
-
-
 @router.post(
-    "/filter_result",
+    "/filter",
     summary="筛选分析结果",
-    description="筛选结果（表单：result_file, min_similarity）"
+    description="筛选分析结果（表单：result_file, min_similarity）"
 )
 async def filter_result(
     result_file: UploadFile = File(..., description="分析结果JSON文件"),
@@ -486,3 +337,4 @@ async def filter_result(
             status_code=ErrorCode.INTERNAL_ERROR,
             detail=get_error_response(ErrorCode.INTERNAL_ERROR, "筛选失败", str(e))
         )
+

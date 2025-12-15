@@ -13,13 +13,26 @@ from app.service.paddle_ocr_service import ocr_service as paddle_ocr_service
 logger = logging.getLogger(__name__)
 
 def extract_text_from_pdf(pdf_path: str, page_range: Optional[List[int]] = None) -> List[Dict[str, Any]]:
-    """从PDF文件中按页提取文本和表格 - 全用OCR提取"""
-    pages = []
+    """从PDF文件中按页提取文本和表格
     
-    # 检查OCR服务是否可用
+    根据配置决定使用OCR还是pdfplumber：
+    - 如果 ENABLE_OCR=True 且OCR服务可用，使用PaddleOCR提取
+    - 否则使用pdfplumber提取
+    """
+    # 检查是否启用OCR
+    enable_ocr = getattr(default_config, 'ENABLE_OCR', False)
+    
+    # 如果未启用OCR，直接使用pdfplumber
+    if not enable_ocr:
+        logger.info("OCR未启用，使用pdfplumber提取文本")
+        return _extract_with_pdfplumber(pdf_path, page_range)
+    
+    # 如果启用OCR，检查OCR服务是否可用
     if not paddle_ocr_service.is_available():
-        logger.warning("OCR服务不可用，回退到pdfplumber提取")
-        return _extract_with_pdfplumber(pdf_path)
+        logger.warning("OCR已启用但服务不可用，回退到pdfplumber提取")
+        return _extract_with_pdfplumber(pdf_path, page_range)
+    
+    pages = []
     
     try:
         # 首先获取PDF总页数
@@ -45,6 +58,7 @@ def extract_text_from_pdf(pdf_path: str, page_range: Optional[List[int]] = None)
                 ocr_result = paddle_ocr_service.recognize_text(pdf_path, page_num)
                 
                 text_content = ocr_result.get('text', '')
+                segments = split_text_to_segments(text_content) if text_content else []
                 logger.info(f"OCR提取第{page_num}页完成，文本长度: {len(text_content)}")
                 
                 # 按页面格式提取，每页作为一个独立的文本段落
@@ -52,6 +66,7 @@ def extract_text_from_pdf(pdf_path: str, page_range: Optional[List[int]] = None)
                     pages.append({
                         'page_num': page_num,
                         'text': text_content,
+                        'segments': segments,
                         'tables': ocr_result.get('tables', [])
                     })
                 else:
@@ -68,12 +83,12 @@ def extract_text_from_pdf(pdf_path: str, page_range: Optional[List[int]] = None)
             
     except Exception as e:
         logger.error(f"OCR提取失败: {str(e)}，回退到pdfplumber")
-        return _extract_with_pdfplumber(pdf_path)
+        return _extract_with_pdfplumber(pdf_path, page_range)
     
     # 检查提取结果
     if not pages:
         logger.warning("OCR提取结果为空，尝试使用pdfplumber")
-        return _extract_with_pdfplumber(pdf_path)
+        return _extract_with_pdfplumber(pdf_path, page_range)
     
     # 统计提取结果
     total_text_length = sum(len(page.get('text', '')) for page in pages)
@@ -83,17 +98,59 @@ def extract_text_from_pdf(pdf_path: str, page_range: Optional[List[int]] = None)
     
     return pages
 
-def _extract_with_pdfplumber(pdf_path: str) -> List[Dict[str, Any]]:
-    """使用pdfplumber作为后备提取方法（简化版，不处理表格）"""
+def _extract_with_pdfplumber(pdf_path: str, page_range: Optional[List[int]] = None) -> List[Dict[str, Any]]:
+    """使用pdfplumber提取PDF文本和表格，并按段落切分"""
     pages = []
     with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            page_data = {
-                'page_num': page.page_number,
-                'text': page.extract_text() or "",
-                'tables': []  # OCR模式下不处理表格
-            }
-            pages.append(page_data)
+        total_pages = len(pdf.pages)
+        
+        # 确定要处理的页面范围
+        if page_range:
+            pages_to_process = [p for p in page_range if 1 <= p <= total_pages]
+            logger.info(f"pdfplumber提取指定页面范围: {page_range}, 有效页面: {pages_to_process}")
+        else:
+            pages_to_process = list(range(1, total_pages + 1))
+            logger.info(f"pdfplumber提取所有页面: 1-{total_pages}")
+        
+        # 提取指定页面的文本和表格
+        for page_num in pages_to_process:
+            try:
+                page = pdf.pages[page_num - 1]  # pdfplumber使用0-based索引
+                text_content = page.extract_text() or ""
+                # 按段落切分，供后续使用
+                segments = split_text_to_segments(text_content) if text_content else []
+                
+                # 提取表格
+                tables = []
+                try:
+                    page_tables = page.extract_tables()
+                    if page_tables:
+                        for table in page_tables:
+                            if table:  # 过滤空表格
+                                tables.append({
+                                    'data': table,
+                                    'rows': len(table),
+                                    'cols': len(table[0]) if table else 0
+                                })
+                except Exception as table_error:
+                    logger.debug(f"提取第{page_num}页表格失败: {str(table_error)}")
+                
+                page_data = {
+                    'page_num': page_num,
+                    'text': text_content,
+                    'segments': segments,
+                    'tables': tables
+                }
+                pages.append(page_data)
+                
+            except IndexError as e:
+                logger.error(f"页面索引错误: {str(e)}")
+                continue
+            except Exception as e:
+                logger.error(f"pdfplumber提取第{page_num}页失败: {str(e)}")
+                continue
+    
+    logger.info(f"pdfplumber提取完成: 有效页数={len(pages)}, 总文本长度={sum(len(p.get('text', '')) for p in pages)}")
     return pages
 
 def extract_kv_tables_from_text(text: str) -> List[Dict[str, Any]]:
