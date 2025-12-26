@@ -20,6 +20,7 @@ dependencies = [
     "paddleocr>=2.7.0",
     "paddlepaddle>=2.5.0",
     "pip>=25.2",
+    "minio>=7.0.0"
 ]
 
 [tool.setuptools]

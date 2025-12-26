@@ -7,7 +7,8 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
-    libgl1-mesa-glx \
+    libgl1 \
+    libglx-mesa0 \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
@@ -18,6 +19,8 @@ COPY . .
 RUN pip install uv
 
 # 通过uv安装所有的依赖
+RUN uv venv /app/.venv
+ENV PATH="/app/.venv/bin:$PATH"
 RUN uv pip install -e .
 
 # 创建必要的目录
