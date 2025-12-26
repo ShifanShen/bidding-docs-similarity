@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
-from app.router import similarity, ocr
+from app.router import similarity, ocr, highlight
 from app.config.log_config import log_config
 
 # 初始化日志
@@ -35,6 +35,7 @@ app.mount("/static", StaticFiles(directory=static_dir), name="static")
 # 注册路由
 app.include_router(similarity.router)
 app.include_router(ocr.router)
+app.include_router(highlight.router)
 
 @app.get("/")
 def root():
