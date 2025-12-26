@@ -74,7 +74,14 @@ docker run -d --name bidding-similarity-app \
   -v %cd%/stopwords.txt:/app/stopwords.txt:ro \
   -v %cd%/tmp_files:/app/tmp_files \
   bidding-docs-similarity
-```
+
+
+docker run -d --name bidding-similarity-app \
+  -p 8020:8020 \
+  -v "$(pwd)/local_text2vec_model:/app/local_text2vec_model:ro" \
+  -v "$(pwd)/stopwords.txt:/app/stopwords.txt:ro" \
+  -v "$(pwd)/tmp_files:/app/tmp_files" \
+  bidding-docs-similarity:latest```
 
 或使用 docker-compose（请将端口映射改为 `8020:8020` 再启动）：
 
