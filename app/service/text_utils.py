@@ -1,6 +1,3 @@
-"""
-文本处理工具模块
-"""
 import re
 import docx
 import pdfplumber
@@ -9,6 +6,10 @@ from typing import List, Dict, Any, Optional
 from app.config.similarity_config import default_config
 from app.config.synonyms_config import SYNONYMS
 from app.service.paddle_ocr_service import ocr_service as paddle_ocr_service
+from app.service.oss_service import oss_service
+import fitz
+import tempfile
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -301,3 +302,111 @@ def is_synonym_evade(text1: str, text2: str) -> bool:
     # 判断是否为规避行为
     total_tokens = max(len(tokens1), len(tokens2))
     return total_tokens > 0 and synonym_count / total_tokens > 0.1
+
+def text_result_highlight(pdf_oss_url, result_json) -> str:
+    """文本高亮函数"""
+    # 提取PDF对象名
+    pdf_name = os.path.basename(pdf_oss_url)
+
+    # 提取json文件中的details
+    details = []
+    all_details = result_json["result"]["result"].get("details", [])
+    details = [d for d in all_details if d.get("bid_file") == pdf_name]
+    if not details:
+        logger.warning(f"'{pdf_name}'不存在相似文本")
+        return pdf_oss_url 
+    
+    # 创建临时文件
+    with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_input:
+        input_path = tmp_input.name
+    with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_output:
+        output_path = tmp_output.name
+
+    # 下载PDF文件
+    if not oss_service.file_exists(pdf_name):
+        raise FileNotFoundError(f"MinIO中不存在'{pdf_name}'")
+    oss_service.download_file(pdf_name, input_path)
+
+    # 打开PDF
+    doc = fitz.open(input_path)
+
+    # 定义三种高亮颜色
+    colors = [(1, 1, 0), (0, 1, 1),(1, 0, 1)]
+    opacities = [0.3, 0.3, 0.3]
+
+    for i, detail in enumerate(details):
+        # 提取匹配信息
+        page_num = detail.get('page', 1)
+        search_text = detail.get('text', '').strip()
+        similar_with = detail.get('similar_with', '').strip()
+        similarity = detail.get('similarity', 0)
+        similar_page = detail.get('similar_page', '')
+        
+        # 在指定页面搜索文本
+        page_idx = int(page_num) - 1
+        page = doc[page_idx]
+        text_instances = page.search_for(search_text)
+
+        # 为当前detail选择一种颜色
+        color_index = i % len(colors)
+        color = colors[color_index]
+        opacity = opacities[color_index]
+
+        # 准备注释信息
+        similar_filename = similar_with.rsplit('.', 1)[0]
+        if len(similar_filename) > 10: similar_filename = similar_filename[:8] + ".."
+        note_text = f"{similar_filename}|{similarity:.1%}|页{similar_page}"
+        text_length = len(note_text)
+        added_annotation = False
+
+        # 切分文本
+        delimiters = r'[，。、；：？！【】（）《》" ",\.;:?!\[\]\(\)\s\t\n\r]'
+        segments = re.split(delimiters, search_text)
+            
+        # 过滤空字符串和太短的片段
+        segments = [seg.strip() for seg in segments if seg.strip() and len(seg.strip()) >= 2]
+        
+        # 高亮文本    
+        for segment in segments:
+            # 搜索每个片段
+            text_instances = page.search_for(segment.strip())
+            if text_instances:
+                for rect in text_instances:
+                    shape = page.new_shape()
+                    shape.draw_rect(rect)
+                    shape.finish(fill=color, fill_opacity=opacity)
+                    shape.commit()
+                    if not added_annotation:
+                        note_width = max(100, text_length * 7)
+                        note_height = 10 
+                        # 计算注释位置
+                        note_x0 = rect.x0 + 5
+                        note_y0 = rect.y0 - note_height - 3 
+                        note_x1 = note_x0 + note_width
+                        note_y1 = note_y0 + note_height
+                        # 如果上方空间不够,则放在下方
+                        page_rect = page.rect
+                        if note_y0 < page_rect.y0:
+                            note_y0 = rect.y0 + rect.height + 5  
+                            note_y1 = note_y0 + note_height
+                        # 确保注释框在页面水平方向内
+                        if note_x1 > page_rect.x1:
+                            note_x0 = max(page_rect.x0, rect.x0 - note_width - 5)  
+                            note_x1 = note_x0 + note_width
+                        note_rect = fitz.Rect(note_x0, note_y0, note_x1, note_y1)
+                        # 添加注释
+                        page.add_freetext_annot(
+                            note_rect,
+                            f"↓{note_text}",
+                            fontsize=7,
+                            text_color=(0,0,0)
+                        )     
+                        added_annotation = True
+    
+    # 保存高亮后的PDF
+    doc.save(output_path)
+    doc.close()
+
+    # 上传高亮后的PDF并返回URL
+    result_url = oss_service.upload_file(output_path, pdf_name)
+    return result_url
