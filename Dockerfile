@@ -28,7 +28,8 @@ ENV UV_HTTP_RETRIES=10
 # 通过uv安装所有的依赖（带缓存）
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install -e .&& \
-    uv pip install "hanlp==2.1.3" "transformers==4.54.1" "tokenizers<0.22"
+    uv pip install "hanlp==2.1.3" "transformers==4.54.1" "tokenizers<0.22"&& \
+    pip install paddlepaddle-gpu
 
 # 创建必要的目录
 RUN mkdir -p tmp_files
