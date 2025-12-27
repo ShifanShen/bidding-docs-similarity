@@ -1,16 +1,18 @@
 """
 OCR文本提取API路由
+提供PDF和图像文件的OCR文本识别功能
 """
 import os
 import logging
 import time
-import tempfile
-import requests
+from datetime import datetime
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, UploadFile, File, HTTPException, Form
 from fastapi.responses import JSONResponse
 from app.service.paddle_ocr_service import ocr_service
 from app.service.text_utils import extract_text_from_pdf
+from app.models.schemas import OCRExtractResponse, OCRStatusResponse, HealthCheckResponse
+from app.models.errors import ErrorCode, ErrorMessage, get_error_response
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/ocr", tags=["OCR文本提取"])
@@ -25,27 +27,40 @@ SUPPORTED_FILE_TYPES = {
     'image/tiff': '.tiff'
 }
 
-@router.post("/upload-and-extract")
+
+@router.post(
+    "/upload-and-extract",
+    response_model=OCRExtractResponse,
+    summary="上传文件并提取文本",
+    description="上传并提取文本（multipart/form-data: file，page_range 等可选）"
+)
 async def upload_and_extract_text(
-    file: UploadFile = File(...),
+    file: UploadFile = File(..., description="PDF或图像文件"),
     page_range: Optional[str] = Form(None, description="页面范围，如'1-3'或'1,3,5'，默认所有页面"),
     extract_tables: bool = Form(False, description="是否提取表格"),
-    confidence_threshold: float = Form(0.5, description="OCR置信度阈值")
+    confidence_threshold: float = Form(0.5, description="OCR置信度阈值", ge=0.0, le=1.0)
 ):
     """上传文件并提取文本"""
     try:
         # 检查文件类型
         if file.content_type not in SUPPORTED_FILE_TYPES:
             raise HTTPException(
-                status_code=400, 
-                detail=f"不支持的文件类型: {file.content_type}。支持的类型: {list(SUPPORTED_FILE_TYPES.keys())}"
+                status_code=ErrorCode.BAD_REQUEST,
+                detail=get_error_response(
+                    ErrorCode.BAD_REQUEST,
+                    ErrorMessage.FILE_TYPE_NOT_SUPPORTED,
+                    f"不支持的文件类型: {file.content_type}。支持的类型: {list(SUPPORTED_FILE_TYPES.keys())}"
+                )
             )
         
         # 检查OCR服务可用性
         if not ocr_service.is_available():
             raise HTTPException(
-                status_code=503,
-                detail="OCR服务不可用，请检查PaddleOCR配置"
+                status_code=ErrorCode.SERVICE_UNAVAILABLE,
+                detail=get_error_response(
+                    ErrorCode.SERVICE_UNAVAILABLE,
+                    ErrorMessage.OCR_SERVICE_UNAVAILABLE
+                )
             )
         
         # 保存上传的文件
@@ -74,7 +89,11 @@ async def upload_and_extract_text(
                 "processing_time": result.get("processing_time", 0)
             })
             
-            return JSONResponse(content=result)
+            return OCRExtractResponse(
+                code=ErrorCode.SUCCESS,
+                msg="提取成功",
+                data=result
+            )
             
         finally:
             # 清理临时文件
@@ -88,7 +107,11 @@ async def upload_and_extract_text(
         raise
     except Exception as e:
         logger.error(f"文件处理失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"文件处理失败: {str(e)}")
+        raise HTTPException(
+            status_code=ErrorCode.INTERNAL_ERROR,
+            detail=get_error_response(ErrorCode.INTERNAL_ERROR, ErrorMessage.OCR_PROCESSING_FAILED, str(e))
+        )
+
 
 async def process_pdf_file(file_path: str, page_range: Optional[str], extract_tables: bool, confidence_threshold: float) -> Dict[str, Any]:
     """处理PDF文件"""
@@ -141,7 +164,11 @@ async def process_pdf_file(file_path: str, page_range: Optional[str], extract_ta
         
     except Exception as e:
         logger.error(f"PDF处理失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"PDF处理失败: {str(e)}")
+        raise HTTPException(
+            status_code=ErrorCode.INTERNAL_ERROR,
+            detail=get_error_response(ErrorCode.INTERNAL_ERROR, "PDF处理失败", str(e))
+        )
+
 
 async def process_image_file(file_path: str, confidence_threshold: float) -> Dict[str, Any]:
     """处理图像文件"""
@@ -163,17 +190,28 @@ async def process_image_file(file_path: str, confidence_threshold: float) -> Dic
         
     except Exception as e:
         logger.error(f"图像处理失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"图像处理失败: {str(e)}")
+        raise HTTPException(
+            status_code=ErrorCode.INTERNAL_ERROR,
+            detail=get_error_response(ErrorCode.INTERNAL_ERROR, "图像处理失败", str(e))
+        )
+
 
 def parse_page_range(page_range: Optional[str]) -> Optional[List[int]]:
     """解析页面范围字符串"""
-    if not page_range:
+    if page_range is None:
         return None
     
     try:
+        # 兼容空字符串或全空白
+        if isinstance(page_range, str) and not page_range.strip():
+            return None
+
         pages = []
         for part in page_range.split(','):
             part = part.strip()
+            if not part:
+                # 跳过空段（例如尾逗号 "1-3,"）
+                continue
             if '-' in part:
                 # 处理范围，如"1-3"
                 start, end = map(int, part.split('-'))
@@ -183,23 +221,46 @@ def parse_page_range(page_range: Optional[str]) -> Optional[List[int]]:
                 pages.append(int(part))
         return sorted(set(pages))  # 去重并排序
     except ValueError:
-        raise HTTPException(status_code=400, detail="无效的页面范围格式")
+        raise HTTPException(
+            status_code=ErrorCode.BAD_REQUEST,
+            detail=get_error_response(ErrorCode.BAD_REQUEST, ErrorMessage.INVALID_PAGE_RANGE)
+        )
 
-@router.get("/status")
+
+@router.get(
+    "/status",
+    response_model=OCRStatusResponse,
+    summary="获取OCR服务状态",
+    description="查询OCR状态"
+)
 async def get_ocr_status():
     """获取OCR服务状态"""
-    return {
-        "ocr_available": ocr_service.is_available(),
-        "supported_file_types": list(SUPPORTED_FILE_TYPES.keys()),
-        "max_file_size": "50MB",
-        "supported_languages": ["中文", "英文"]
-    }
+    return OCRStatusResponse(
+        code=ErrorCode.SUCCESS,
+        msg=ErrorMessage.SUCCESS,
+        data={
+            "ocr_available": ocr_service.is_available(),
+            "supported_file_types": list(SUPPORTED_FILE_TYPES.keys()),
+            "max_file_size": "50MB",
+            "supported_languages": ["中文", "英文"]
+        }
+    )
 
-@router.get("/health")
+
+@router.get(
+    "/health",
+    response_model=HealthCheckResponse,
+    summary="健康检查",
+    description="健康检查"
+)
 async def health_check():
     """健康检查端点"""
-    return {
-        "status": "healthy",
-        "ocr_service": "available" if ocr_service.is_available() else "unavailable",
-        "timestamp": __import__('datetime').datetime.now().isoformat()
-    }
+    return HealthCheckResponse(
+        code=ErrorCode.SUCCESS,
+        msg="服务正常",
+        data={
+            "status": "healthy",
+            "ocr_service": "available" if ocr_service.is_available() else "unavailable",
+            "timestamp": datetime.now().isoformat()
+        }
+    )

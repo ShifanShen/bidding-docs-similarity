@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 from app.router import similarity, ocr
 from app.config.log_config import log_config
+from app.router.entity import router as entity_router
 
 # 初始化日志
 log_config.setup_logging()
@@ -35,6 +36,7 @@ app.mount("/static", StaticFiles(directory=static_dir), name="static")
 # 注册路由
 app.include_router(similarity.router)
 app.include_router(ocr.router)
+app.include_router(entity_router)
 
 @app.get("/")
 def root():

@@ -1,6 +1,17 @@
-version: '3.8'
-
 services:
+  minio:
+    image: minio/minio:latest
+    container_name: bidding-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+
   bidding-similarity:
     build: .
     container_name: bidding-similarity-app
@@ -15,4 +26,14 @@ services:
       - ./tmp_files:/app/tmp_files
     environment:
       - PYTHONPATH=/app
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - MINIO_SECURE=false
+      - MINIO_BUCKET=bidding-docs
+    depends_on:
+      - minio
     restart: unless-stopped
+  
+volumes:
+  minio_data:

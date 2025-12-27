@@ -9,17 +9,34 @@ from typing import List, Dict, Any, Optional
 from app.config.similarity_config import default_config
 from app.config.synonyms_config import SYNONYMS
 from app.service.paddle_ocr_service import ocr_service as paddle_ocr_service
+from app.service.oss_service import oss_service
+import fitz
+import tempfile
+import os
 
 logger = logging.getLogger(__name__)
 
 def extract_text_from_pdf(pdf_path: str, page_range: Optional[List[int]] = None) -> List[Dict[str, Any]]:
-    """从PDF文件中按页提取文本和表格 - 全用OCR提取"""
-    pages = []
+    """从PDF文件中按页提取文本和表格
     
-    # 检查OCR服务是否可用
+    根据配置决定使用OCR还是pdfplumber：
+    - 如果 ENABLE_OCR=True 且OCR服务可用，使用PaddleOCR提取
+    - 否则使用pdfplumber提取
+    """
+    # 检查是否启用OCR
+    enable_ocr = getattr(default_config, 'ENABLE_OCR', False)
+    
+    # 如果未启用OCR，直接使用pdfplumber
+    if not enable_ocr:
+        logger.info("OCR未启用，使用pdfplumber提取文本")
+        return _extract_with_pdfplumber(pdf_path, page_range)
+    
+    # 如果启用OCR，检查OCR服务是否可用
     if not paddle_ocr_service.is_available():
-        logger.warning("OCR服务不可用，回退到pdfplumber提取")
-        return _extract_with_pdfplumber(pdf_path)
+        logger.warning("OCR已启用但服务不可用，回退到pdfplumber提取")
+        return _extract_with_pdfplumber(pdf_path, page_range)
+    
+    pages = []
     
     try:
         # 首先获取PDF总页数
@@ -45,6 +62,7 @@ def extract_text_from_pdf(pdf_path: str, page_range: Optional[List[int]] = None)
                 ocr_result = paddle_ocr_service.recognize_text(pdf_path, page_num)
                 
                 text_content = ocr_result.get('text', '')
+                segments = split_text_to_segments(text_content) if text_content else []
                 logger.info(f"OCR提取第{page_num}页完成，文本长度: {len(text_content)}")
                 
                 # 按页面格式提取，每页作为一个独立的文本段落
@@ -52,6 +70,7 @@ def extract_text_from_pdf(pdf_path: str, page_range: Optional[List[int]] = None)
                     pages.append({
                         'page_num': page_num,
                         'text': text_content,
+                        'segments': segments,
                         'tables': ocr_result.get('tables', [])
                     })
                 else:
@@ -68,12 +87,12 @@ def extract_text_from_pdf(pdf_path: str, page_range: Optional[List[int]] = None)
             
     except Exception as e:
         logger.error(f"OCR提取失败: {str(e)}，回退到pdfplumber")
-        return _extract_with_pdfplumber(pdf_path)
+        return _extract_with_pdfplumber(pdf_path, page_range)
     
     # 检查提取结果
     if not pages:
         logger.warning("OCR提取结果为空，尝试使用pdfplumber")
-        return _extract_with_pdfplumber(pdf_path)
+        return _extract_with_pdfplumber(pdf_path, page_range)
     
     # 统计提取结果
     total_text_length = sum(len(page.get('text', '')) for page in pages)
@@ -83,17 +102,59 @@ def extract_text_from_pdf(pdf_path: str, page_range: Optional[List[int]] = None)
     
     return pages
 
-def _extract_with_pdfplumber(pdf_path: str) -> List[Dict[str, Any]]:
-    """使用pdfplumber作为后备提取方法（简化版，不处理表格）"""
+def _extract_with_pdfplumber(pdf_path: str, page_range: Optional[List[int]] = None) -> List[Dict[str, Any]]:
+    """使用pdfplumber提取PDF文本和表格，并按段落切分"""
     pages = []
     with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            page_data = {
-                'page_num': page.page_number,
-                'text': page.extract_text() or "",
-                'tables': []  # OCR模式下不处理表格
-            }
-            pages.append(page_data)
+        total_pages = len(pdf.pages)
+        
+        # 确定要处理的页面范围
+        if page_range:
+            pages_to_process = [p for p in page_range if 1 <= p <= total_pages]
+            logger.info(f"pdfplumber提取指定页面范围: {page_range}, 有效页面: {pages_to_process}")
+        else:
+            pages_to_process = list(range(1, total_pages + 1))
+            logger.info(f"pdfplumber提取所有页面: 1-{total_pages}")
+        
+        # 提取指定页面的文本和表格
+        for page_num in pages_to_process:
+            try:
+                page = pdf.pages[page_num - 1]  # pdfplumber使用0-based索引
+                text_content = page.extract_text() or ""
+                # 按段落切分，供后续使用
+                segments = split_text_to_segments(text_content) if text_content else []
+                
+                # 提取表格
+                tables = []
+                try:
+                    page_tables = page.extract_tables()
+                    if page_tables:
+                        for table in page_tables:
+                            if table:  # 过滤空表格
+                                tables.append({
+                                    'data': table,
+                                    'rows': len(table),
+                                    'cols': len(table[0]) if table else 0
+                                })
+                except Exception as table_error:
+                    logger.debug(f"提取第{page_num}页表格失败: {str(table_error)}")
+                
+                page_data = {
+                    'page_num': page_num,
+                    'text': text_content,
+                    'segments': segments,
+                    'tables': tables
+                }
+                pages.append(page_data)
+                
+            except IndexError as e:
+                logger.error(f"页面索引错误: {str(e)}")
+                continue
+            except Exception as e:
+                logger.error(f"pdfplumber提取第{page_num}页失败: {str(e)}")
+                continue
+    
+    logger.info(f"pdfplumber提取完成: 有效页数={len(pages)}, 总文本长度={sum(len(p.get('text', '')) for p in pages)}")
     return pages
 
 def extract_kv_tables_from_text(text: str) -> List[Dict[str, Any]]:
@@ -301,3 +362,111 @@ def is_synonym_evade(text1: str, text2: str) -> bool:
     # 判断是否为规避行为
     total_tokens = max(len(tokens1), len(tokens2))
     return total_tokens > 0 and synonym_count / total_tokens > 0.1
+
+def text_result_highlight(pdf_oss_url, result_json) -> str:
+    """文本高亮函数"""
+    # 提取PDF对象名
+    pdf_name = os.path.basename(pdf_oss_url)
+
+    # 提取json文件中的details
+    details = []
+    all_details = result_json["result"]["result"].get("details", [])
+    details = [d for d in all_details if d.get("bid_file") == pdf_name]
+    if not details:
+        logger.warning(f"'{pdf_name}'不存在相似文本")
+        return pdf_oss_url
+
+    # 创建临时文件
+    with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_input:
+        input_path = tmp_input.name
+    with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_output:
+        output_path = tmp_output.name
+
+    # 下载PDF文件
+    if not oss_service.file_exists(pdf_name):
+        raise FileNotFoundError(f"MinIO中不存在'{pdf_name}'")
+    oss_service.download_file(pdf_name, input_path)
+
+    # 打开PDF
+    doc = fitz.open(input_path)
+
+    # 定义三种高亮颜色
+    colors = [(1, 1, 0), (0, 1, 1),(1, 0, 1)]
+    opacities = [0.3, 0.3, 0.3]
+
+    for i, detail in enumerate(details):
+        # 提取匹配信息
+        page_num = detail.get('page', 1)
+        search_text = detail.get('text', '').strip()
+        similar_with = detail.get('similar_with', '').strip()
+        similarity = detail.get('similarity', 0)
+        similar_page = detail.get('similar_page', '')
+
+        # 在指定页面搜索文本
+        page_idx = int(page_num) - 1
+        page = doc[page_idx]
+        text_instances = page.search_for(search_text)
+
+        # 为当前detail选择一种颜色
+        color_index = i % len(colors)
+        color = colors[color_index]
+        opacity = opacities[color_index]
+
+        # 准备注释信息
+        similar_filename = similar_with.rsplit('.', 1)[0]
+        if len(similar_filename) > 10: similar_filename = similar_filename[:8] + ".."
+        note_text = f"{similar_filename}|{similarity:.1%}|页{similar_page}"
+        text_length = len(note_text)
+        added_annotation = False
+
+        # 切分文本
+        delimiters = r'[，。、；：？！【】（）《》" ",\.;:?!\[\]\(\)\s\t\n\r]'
+        segments = re.split(delimiters, search_text)
+
+        # 过滤空字符串和太短的片段
+        segments = [seg.strip() for seg in segments if seg.strip() and len(seg.strip()) >= 2]
+
+        # 高亮文本
+        for segment in segments:
+            # 搜索每个片段
+            text_instances = page.search_for(segment.strip())
+            if text_instances:
+                for rect in text_instances:
+                    shape = page.new_shape()
+                    shape.draw_rect(rect)
+                    shape.finish(fill=color, fill_opacity=opacity)
+                    shape.commit()
+                    if not added_annotation:
+                        note_width = max(100, text_length * 7)
+                        note_height = 10
+                        # 计算注释位置
+                        note_x0 = rect.x0 + 5
+                        note_y0 = rect.y0 - note_height - 3
+                        note_x1 = note_x0 + note_width
+                        note_y1 = note_y0 + note_height
+                        # 如果上方空间不够,则放在下方
+                        page_rect = page.rect
+                        if note_y0 < page_rect.y0:
+                            note_y0 = rect.y0 + rect.height + 5
+                            note_y1 = note_y0 + note_height
+                        # 确保注释框在页面水平方向内
+                        if note_x1 > page_rect.x1:
+                            note_x0 = max(page_rect.x0, rect.x0 - note_width - 5)
+                            note_x1 = note_x0 + note_width
+                        note_rect = fitz.Rect(note_x0, note_y0, note_x1, note_y1)
+                        # 添加注释
+                        page.add_freetext_annot(
+                            note_rect,
+                            f"↓{note_text}",
+                            fontsize=7,
+                            text_color=(0,0,0)
+                        )
+                        added_annotation = True
+
+    # 保存高亮后的PDF
+    doc.save(output_path)
+    doc.close()
+
+    # 上传高亮后的PDF并返回URL
+    result_url = oss_service.upload_file(output_path, pdf_name)
+    return result_url
