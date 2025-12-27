@@ -1,0 +1,83 @@
+{
+  "msg": "查询成功",
+  "result": {
+    "status": "done",
+    "progress": {
+      "current": 6,
+      "total": 6
+    },
+    "result": {
+      "summary": "分析完成，发现306处高相似度片段，0组相同语法错误。",
+      "details": [
+        {
+          "bid_file": "北京双杰电气股份有限公司.pdf",
+          "page": 1,
+          "text": "北京双杰电气股份有限公司 标段名称：中煤集团古尔班通古特沙漠基地52.5万千瓦新能源项目逆变器设备采购, 响应文件 （技术部分包封A）",
+          "grammar_errors": [],
+          "similar_with": "特变电工新疆新能源股份有限公司.pdf",
+          "similar_page": 888,
+          "similarity": 0.8888,
+          "is_near_identical": false,
+          "similar_text":" ",
+          "similar_grammar_errors": [],
+          "order_changed": false,
+          "stopword_evade": false,
+          "synonym_evade": false,
+          "semantic_evade": true,
+          "rank": 1
+        },
+        {
+          "bid_file": "北京双杰电气股份有限公司.pdf",
+          "page": 5,
+          "text":"应答人保证：除商务和技术偏差表列出的偏差外，应答人响应采购文件的全部要求；",
+          "grammar_errors": [],
+          "similar_with": "特变电工新疆新能源股份有限公司.pdf",
+          "similar_page": 999,
+          "similarity": 0.9999,
+          "is_near_identical": false,
+          "similar_text":" ",
+          "similar_grammar_errors": [],
+          "order_changed": false,
+          "stopword_evade": false,
+          "synonym_evade": false,
+          "semantic_evade": false,
+          "rank": 2
+        },
+        {
+          "bid_file": "北京双杰电气股份有限公司.pdf",
+          "page": 6,
+          "text":"【编注说明：1.本部分描述适用于综合评估法，经评审的最低投标价法按第三章评审办法（经评审的最低投标价法）技术评审因素填写要求填写。2.根据第二卷第五章“供货要求”进行填写和完善3.下述条款需与第三章评标办法中技术评审因素一致】",
+          "grammar_errors": [],
+          "similar_with": "特变电工新疆新能源股份有限公司.pdf",
+          "similar_page": 777,
+          "similarity": 0.7777,
+          "is_near_identical": false,
+          "similar_text":" ",
+          "similar_grammar_errors": [],
+          "order_changed": false,
+          "stopword_evade": false,
+          "synonym_evade": false,
+          "semantic_evade": false,
+          "rank": 3
+        },
+        {
+          "bid_file": "特变电工新疆新能源股份有限公司.pdf",
+          "page": 1,
+          "text":"国核电力规划设计研究院有限公司标段名称：古尔班通古特沙漠基地",
+          "grammar_errors": [],
+          "similar_with": "北京双杰电气股份有限公司.pdf",
+          "similar_page": 666,
+          "similarity": 0.6666,
+          "is_near_identical": false,
+          "similar_text":" ",
+          "similar_grammar_errors": [],
+          "order_changed": false,
+          "stopword_evade": false,
+          "synonym_evade": false,
+          "semantic_evade": false,
+          "rank": 4
+        }
+      ]
+    }
+  }
+}

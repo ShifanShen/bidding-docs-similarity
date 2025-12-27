@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>PDF高亮</title>
+    <style>
+        body {
+            font-family: Arial;
+            max-width: 500px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+        h2 { color: #333; }
+        .file-box {
+            margin: 20px 0;
+            padding: 20px;
+            border: 2px dashed #ddd;
+            border-radius: 10px;
+        }
+        .file-box:hover {
+            border-color: #007bff;
+        }
+        input[type="file"] {
+            margin: 10px 0;
+            padding: 10px;
+            width: 100%;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            width: 100%;
+        }
+        button:disabled {
+            background: #ccc;
+        }
+        .result {
+            margin-top: 20px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 10px;
+            border-left: 4px solid #28a745;
+        }
+        .no-match {
+            border-left: 4px solid #ffc107;
+        }
+        .error {
+            color: #dc3545;
+            padding: 10px;
+            background: #f8d7da;
+            border-radius: 5px;
+            margin-top: 10px;
+        }
+        .loading {
+            color: #6c757d;
+            font-style: italic;
+            margin-top: 10px;
+        }
+        a {
+            color: #007bff;
+            text-decoration: none;
+        }
+        a:hover {
+            text-decoration: underline;
+        }
+        .download-btn {
+            display: inline-block;
+            background: #28a745;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 4px;
+            text-decoration: none;
+            margin-right: 10px;
+        }
+        .download-btn:hover {
+            background: #218838;
+        }
+        .file-info {
+            margin-top: 10px;
+            padding: 10px;
+            background: white;
+            border-radius: 4px;
+            border: 1px solid #dee2e6;
+        }
+    </style>
+</head>
+<body>
+    <h2>📄 PDF相似文本高亮</h2>
+    
+    <div class="file-box">
+        <p><strong>1. 选择PDF文件:</strong></p>
+        <input type="file" id="pdfFile" accept=".pdf">
+        <div id="pdfInfo" class="file-info" style="display:none"></div>
+    </div>
+    
+    <div class="file-box">
+        <p><strong>2. 选择JSON分析结果:</strong></p>
+        <input type="file" id="jsonFile" accept=".json">
+        <div id="jsonInfo" class="file-info" style="display:none"></div>
+    </div>
+    
+    <button onclick="submit()" id="submitBtn">开始高亮处理</button>
+    
+    <div id="loading" class="loading" style="display:none">
+        🔄 正在处理中，请稍候...
+    </div>
+    
+    <div id="result" class="result" style="display:none">
+        <h3 id="resultTitle"></h3>
+        <div id="resultContent"></div>
+    </div>
+    
+    <div id="error" class="error" style="display:none"></div>
+
+    <script>
+        // 文件选择监听
+        document.getElementById('pdfFile').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (file) {
+                document.getElementById('pdfInfo').innerHTML = 
+                    `📄 ${file.name} (${formatFileSize(file.size)})`;
+                document.getElementById('pdfInfo').style.display = 'block';
+            }
+        });
+        
+        document.getElementById('jsonFile').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (file) {
+                document.getElementById('jsonInfo').innerHTML = 
+                    `📊 ${file.name} (${formatFileSize(file.size)})`;
+                document.getElementById('jsonInfo').style.display = 'block';
+            }
+        });
+        
+        async function submit() {
+            const pdfFile = document.getElementById('pdfFile').files[0];
+            const jsonFile = document.getElementById('jsonFile').files[0];
+            const submitBtn = document.getElementById('submitBtn');
+            const loading = document.getElementById('loading');
+            const resultDiv = document.getElementById('result');
+            const resultTitle = document.getElementById('resultTitle');
+            const resultContent = document.getElementById('resultContent');
+            const errorDiv = document.getElementById('error');
+            
+            // 验证
+            if (!pdfFile) {
+                showError('请选择PDF文件');
+                return;
+            }
+            if (!jsonFile) {
+                showError('请选择JSON文件');
+                return;
+            }
+            
+            // 显示加载
+            submitBtn.disabled = true;
+            loading.style.display = 'block';
+            resultDiv.style.display = 'none';
+            errorDiv.style.display = 'none';
+            
+            try {
+                // 验证JSON格式
+                const jsonText = await jsonFile.text();
+                const jsonData = JSON.parse(jsonText);
+                
+                // 检查是否有匹配的details
+                const allDetails = jsonData?.result?.result?.details || [];
+                const pdfDetails = allDetails.filter(d => d.bid_file === pdfFile.name);
+                
+                console.log(`找到 ${pdfDetails.length} 个匹配项`);
+                
+                // 准备表单数据
+                const formData = new FormData();
+                formData.append('pdf_file', pdfFile);
+                formData.append('json_file', jsonFile);
+                
+                // 发送请求
+                const response = await fetch('/api/highlight/result-files', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(data.detail || data.message || '服务器错误');
+                }
+                
+                if (data.success) {
+                    showResult(data.data, pdfDetails.length);
+                } else {
+                    showError(data.message || '处理失败');
+                }
+            } catch (err) {
+                if (err.message.includes('JSON')) {
+                    showError('JSON文件格式错误，请检查文件内容');
+                } else {
+                    showError('请求失败: ' + err.message);
+                }
+            } finally {
+                submitBtn.disabled = false;
+                loading.style.display = 'none';
+            }
+        }
+        
+        function showResult(data, matchCount) {
+            const resultDiv = document.getElementById('result');
+            const resultTitle = document.getElementById('resultTitle');
+            const resultContent = document.getElementById('resultContent');
+            
+            if (data.highlight_count > 0 || matchCount > 0) {
+                resultTitle.innerHTML = '✅ 高亮处理完成';
+                resultDiv.className = 'result';
+                
+                resultContent.innerHTML = `
+                    <p><strong>文件:</strong> ${data.original_pdf}</p>
+                    <p><strong>找到匹配:</strong> ${data.highlight_count || matchCount} 处</p>
+                    <div style="margin-top: 15px;">
+                        <a href="${data.highlighted_pdf_url}" class="download-btn" target="_blank">
+                            📥 下载高亮PDF
+                        </a>
+                        <a href="${data.original_pdf_url}" target="_blank">
+                            查看原始PDF
+                        </a>
+                    </div>
+                    <p style="margin-top: 10px; color: #666; font-size: 14px;">
+                        ⓘ 下载链接可能直接打开PDF，可右键选择"另存为"
+                    </p>
+                `;
+            } else {
+                resultTitle.innerHTML = '⚠️ 处理完成';
+                resultDiv.className = 'result no-match';
+                
+                resultContent.innerHTML = `
+                    <p><strong>文件:</strong> ${data.original_pdf}</p>
+                    <p>当前PDF中没有找到匹配的相似文本</p>
+                    <p><a href="${data.original_pdf_url}" target="_blank">查看原始PDF</a></p>
+                `;
+            }
+            
+            resultDiv.style.display = 'block';
+            resultDiv.scrollIntoView({ behavior: 'smooth' });
+        }
+        
+        function showError(msg) {
+            const errorDiv = document.getElementById('error');
+            errorDiv.innerHTML = '❌ ' + msg;
+            errorDiv.style.display = 'block';
+        }
+        
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+    </script>
+</body>
+</html>
