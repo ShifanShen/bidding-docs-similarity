@@ -25,7 +25,6 @@ from app.service.text_utils import (
 )
 from app.config.similarity_config import default_config
 from app.config.terms_config import COMMON_TERMS
-from app.service.entity_rec_service import default_entity_rec_service
 
 # 初始化提取文本保存目录
 EXTRACTED_TEXTS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../extracted_texts'))
@@ -199,18 +198,22 @@ class SimilarityService:
             tender_texts = extracted_data['tender_texts']
             tender_segments = []
             for text_data in tender_texts:
-                # 直接使用页面文本，不进行额外的切分
-                page_text = text_data.get('text', '')
-                if page_text and len(page_text.strip()) >= self.min_text_length:
-                    clean_text = remove_stopwords(page_text, list(self.stopwords))
-                    if clean_text:
-                        grammar_errors = detect_grammar_errors(clean_text)
-                        tender_segments.append({
-                            'page': text_data.get('page', 1),
-                            'text': clean_text,
-                            'grammar_errors': grammar_errors,
-                            'is_table_cell': False
-                        })
+                # 优先使用已经切好的 segments，若无则用整页文本切分
+                seg_list = text_data.get('segments')
+                if seg_list is None:
+                    page_text = text_data.get('text', '')
+                    seg_list = split_text_to_segments(page_text) if page_text else []
+                for seg in seg_list:
+                    if seg and len(seg.strip()) >= self.min_text_length:
+                        clean_text = remove_stopwords(seg, list(self.stopwords))
+                        if clean_text:
+                            grammar_errors = detect_grammar_errors(clean_text)
+                            tender_segments.append({
+                                'page': text_data.get('page', 1),
+                                'text': clean_text,
+                                'grammar_errors': grammar_errors,
+                                'is_table_cell': False
+                            })
             
             # 处理投标文件文本
             bid_files_data = extracted_data['bid_files']
@@ -221,18 +224,21 @@ class SimilarityService:
             for bid_file_data in bid_files_data:
                 file_segments = []
                 for text_data in bid_file_data['texts']:
-                    # 直接使用页面文本，不进行额外的切分
-                    page_text = text_data.get('text', '')
-                    if page_text and len(page_text.strip()) >= self.min_text_length:
-                        clean_text = remove_stopwords(page_text, list(self.stopwords))
-                        if clean_text:
-                            grammar_errors = detect_grammar_errors(clean_text)
-                            file_segments.append({
-                                'page': text_data.get('page', 1),
-                                'text': clean_text,
-                                'grammar_errors': grammar_errors,
-                                'is_table_cell': False
-                            })
+                    seg_list = text_data.get('segments')
+                    if seg_list is None:
+                        page_text = text_data.get('text', '')
+                        seg_list = split_text_to_segments(page_text) if page_text else []
+                    for seg in seg_list:
+                        if seg and len(seg.strip()) >= self.min_text_length:
+                            clean_text = remove_stopwords(seg, list(self.stopwords))
+                            if clean_text:
+                                grammar_errors = detect_grammar_errors(clean_text)
+                                file_segments.append({
+                                    'page': text_data.get('page', 1),
+                                    'text': clean_text,
+                                    'grammar_errors': grammar_errors,
+                                    'is_table_cell': False
+                                })
                 
                 if file_segments:
                     # 向量化
@@ -290,42 +296,55 @@ class SimilarityService:
             for idx, page_data in enumerate(pages):
                 page_num = page_data['page_num']
                 segs = []
-                for seg in split_text_to_segments(page_data['text']):
+                precomputed = page_data.get('segments')
+                for seg in (precomputed if precomputed is not None else split_text_to_segments(page_data['text'])):
+                    # 保存原始文本（去停用词之前）
+                    original_seg = seg
                     clean_seg = remove_stopwords(seg, list(self.stopwords))
                     if clean_seg and len(clean_seg) >= self.min_text_length:
                         grammar_errors = detect_grammar_errors(clean_seg)
                         segs.append({
                             'page': page_num,
-                            'text': clean_seg,
+                            'text': clean_seg,  # 处理后的文本（用于相似度分析）
+                            'original_text': original_seg,  # 原始文本（用于保存）
                             'grammar_errors': grammar_errors,
                             'is_table_cell': False
                         })
 
-                # 表格（KV块）提取为独立段落，便于专门比较
+                # 表格行提取：将pdfplumber表格按行生成段落，保留行/列索引
                 if getattr(self.config, 'ENABLE_TABLE_DETECTION', False):
-                    kv_blocks = extract_kv_tables_from_text(page_data.get('text', '') or '')
-                    for blk in kv_blocks:
-                        # 将items拼接为统一规范文本
-                        items = blk.get('items', {})
-                        if not items:
+                    tables = page_data.get('tables') or []
+                    for t_idx, table in enumerate(tables):
+                        rows = table.get('data') if isinstance(table, dict) else table
+                        if not rows:
                             continue
-                        kv_text = '; '.join([f"{k}={v}" for k, v in items.items()])
-                        if kv_text and len(kv_text) >= self.min_text_length // 3:
-                            grammar_errors = []
-                            segs.append({
-                                'page': page_num,
-                                'text': kv_text,
-                                'grammar_errors': grammar_errors,
-                                'is_table_cell': True,
-                                'is_table_segment': True,
-                                'table_items': items
-                            })
+                        for r_idx, row in enumerate(rows):
+                            # row 是单元格列表，打上索引并拼接为一行文本
+                            cells = []
+                            if isinstance(row, list):
+                                for c_idx, cell in enumerate(row):
+                                    val = (cell or "").strip()
+                                    if val:
+                                        cells.append(val)
+                            row_text = " | ".join(cells)
+                            if row_text and len(row_text) >= max(1, self.min_text_length // 3):
+                                segs.append({
+                                    'page': page_num,
+                                    'text': row_text,  # 处理后的文本（用于相似度分析）
+                                    'original_text': row_text,  # 表格行文本本身就是原始文本
+                                    'grammar_errors': [],
+                                    'is_table_cell': True,
+                                    'table_idx': t_idx,
+                                    'row_idx': r_idx,
+                                    'cells': cells
+                                })
 
                 # 自动合并跨页段落
                 if auto_merge:
                     if last_unfinished and segs:
                         # 前一页未完+本页首段
                         segs[0]['text'] = last_unfinished['text'] + segs[0]['text']
+                        segs[0]['original_text'] = last_unfinished.get('original_text', last_unfinished['text']) + segs[0].get('original_text', segs[0]['text'])
                         segs[0]['grammar_errors'] = list(set(last_unfinished['grammar_errors'] + segs[0]['grammar_errors']))
                         last_unfinished = None
                     # 针对当页最后一段判断是否结尾
@@ -344,12 +363,15 @@ class SimilarityService:
             segments = []
             for i, para in enumerate(paras):
                 for seg in split_text_to_segments(para):
+                    # 保存原始文本（去停用词之前）
+                    original_seg = seg
                     clean_seg = remove_stopwords(seg, list(self.stopwords))
                     if clean_seg and len(clean_seg) >= self.min_text_length:
                         grammar_errors = detect_grammar_errors(clean_seg)
                         segments.append({
                             'page': i+1,
-                            'text': clean_seg,
+                            'text': clean_seg,  # 处理后的文本（用于相似度分析）
+                            'original_text': original_seg,  # 原始文本（用于保存）
                             'grammar_errors': grammar_errors,
                             'is_table_cell': False
                         })
@@ -435,6 +457,7 @@ class SimilarityService:
                               bid_file_paths: List[str], bid_segments_list: List[List[Dict[str, Any]]]) -> None:
         """
         保存任务中提取的所有文本到extracted_texts目录
+        按页面分组保存，每个页面包含segments数组（分段后的文本）
         """
         try:
             # 准备要保存的数据
@@ -446,19 +469,35 @@ class SimilarityService:
                 "bid_files": []
             }
             
-            # 添加招标文件提取的文本（含实体识别）
+            # 按页面分组招标文件的segments
+            tender_pages = {}
             for seg in tender_segments:
-                page_obj = {
-                     "page": seg["page"],
-                    "text": seg["text"],
-                    "is_table_cell": seg["is_table_cell"]
-                }
-                try:
-                    page_obj["entities"] = default_entity_rec_service.recognize(seg["text"])
-                except Exception as e:
-                    logger.warning(f"实体识别失败（招标页 {seg.get('page')}）: {e}")
-                    page_obj["entities"] = []
-                extracted_data["tender_texts"].append(page_obj)
+                page_num = seg["page"]
+                if page_num not in tender_pages:
+                    tender_pages[page_num] = {
+                        "page": page_num,
+                        "text": "",  # 保留完整页面文本（向后兼容）
+                        "segments": []  # 分段后的文本数组
+                    }
+                # 添加segment，使用原始文本（如果存在）
+                original_text = seg.get("original_text", seg["text"])
+                tender_pages[page_num]["segments"].append({
+                    "text": original_text,  # 保存原始文本
+                    "is_table_cell": seg.get("is_table_cell", False),
+                    "grammar_errors": seg.get("grammar_errors", []),
+                    "table_idx": seg.get("table_idx"),
+                    "row_idx": seg.get("row_idx"),
+                    "cells": seg.get("cells")
+                })
+                # 合并文本（保留换行符，用于向后兼容）
+                if tender_pages[page_num]["text"]:
+                    tender_pages[page_num]["text"] += "\n" + original_text
+                else:
+                    tender_pages[page_num]["text"] = original_text
+            
+            # 按页面号排序并添加到结果
+            for page_num in sorted(tender_pages.keys()):
+                extracted_data["tender_texts"].append(tender_pages[page_num])
             
             # 添加每个投标文件提取的文本
             for i, bid_path in enumerate(bid_file_paths):
@@ -468,18 +507,35 @@ class SimilarityService:
                 }
                 
                 if i < len(bid_segments_list):
+                    # 按页面分组投标文件的segments
+                    bid_pages = {}
                     for seg in bid_segments_list[i]:
-                        page_obj = {
-                            "page": seg["page"],
-                            "text": seg["text"],
-                            "is_table_cell": seg["is_table_cell"]
-                        }
-                        try:
-                            page_obj["entities"] = default_entity_rec_service.recognize(seg["text"])
-                        except Exception as e:
-                            logger.warning(f"实体识别失败（投标文件 {bid_data['file_name']} 页 {seg.get('page')}）: {e}")
-                            page_obj["entities"] = []
-                        bid_data["texts"].append(page_obj)
+                        page_num = seg["page"]
+                        if page_num not in bid_pages:
+                            bid_pages[page_num] = {
+                                "page": page_num,
+                                "text": "",  # 保留完整页面文本（向后兼容）
+                                "segments": []  # 分段后的文本数组
+                            }
+                        # 添加segment，使用原始文本（如果存在）
+                        original_text = seg.get("original_text", seg["text"])
+                        bid_pages[page_num]["segments"].append({
+                            "text": original_text,  # 保存原始文本
+                            "is_table_cell": seg.get("is_table_cell", False),
+                            "grammar_errors": seg.get("grammar_errors", []),
+                            "table_idx": seg.get("table_idx"),
+                            "row_idx": seg.get("row_idx"),
+                            "cells": seg.get("cells")
+                        })
+                        # 合并文本（保留换行符，用于向后兼容）
+                        if bid_pages[page_num]["text"]:
+                            bid_pages[page_num]["text"] += "\n" + original_text
+                        else:
+                            bid_pages[page_num]["text"] = original_text
+                    
+                    # 按页面号排序并添加到结果
+                    for page_num in sorted(bid_pages.keys()):
+                        bid_data["texts"].append(bid_pages[page_num])
                 
                 extracted_data["bid_files"].append(bid_data)
             

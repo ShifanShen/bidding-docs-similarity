@@ -1,5 +1,3 @@
-# app/service/entity_rec_service.py
-# -*- coding: utf-8 -*-
 
 from __future__ import annotations
 
@@ -30,7 +28,7 @@ from app.config.entity_rec_config import (
 # =========================
 
 def strip_literal_esc_tokens(s: str) -> str:
-    """只删除字面量 \\n（两个字符：反斜杠 + n）"""
+    """只删除字面量 \n（两个字符：反斜杠 + n）"""
     if not s:
         return s
     # 只按配置删（当前就是 ("\\n",)）
@@ -40,7 +38,7 @@ def strip_literal_esc_tokens(s: str) -> str:
 
 
 def normalize_ws(s: str) -> str:
-    """压缩真实空白（不会影响字面量\\n，因为已在外层删掉）"""
+    """压缩真实空白（不会影响字面量\n，因为已在外层删掉）"""
     return re.sub(r"\s+", " ", s).strip()
 
 
@@ -64,7 +62,7 @@ def chunk_text(text: str, max_chars: int = 1800) -> List[str]:
     if len(text) <= max_chars:
         return [text]
 
-    seps = set("。！？；;,.，、\n")
+    seps = set("。！？；;,，、\n")
     out: List[str] = []
     i = 0
     n = len(text)
@@ -302,14 +300,14 @@ class EntityRecService:
         return self._nlp
 
     def extract_entities_from_text(
-        self,
-        raw_text: str,
-        entity_keys: Optional[List[str]] = None,
-        keep_offsets: bool = False,
-        max_chars_per_chunk: int = 1800,
+            self,
+            raw_text: str,
+            entity_keys: Optional[List[str]] = None,
+            keep_offsets: bool = False,
+            max_chars_per_chunk: int = 1800,
     ) -> List[Dict[str, Any]]:
         """
-        输出：entities 数组（你图里的格式）
+        输出：entities 数组
         """
         entity_keys = entity_keys or DEFAULT_ENTITIES
         entities: List[Dict[str, Any]] = []
@@ -317,7 +315,7 @@ class EntityRecService:
         if not raw_text or not raw_text.strip():
             return entities
 
-        # 只删字面量 \\n；再压缩真实空白
+        # 只删字面量 \n；再压缩真实空白
         view_text = normalize_ws(strip_literal_esc_tokens(raw_text))
 
         # ========== 1) HanLP（人名 / 公司）分块推理 ==========
@@ -400,12 +398,12 @@ class EntityRecService:
         return entities
 
     def enrich_extracted_data(
-        self,
-        payload: Any,
-        entity_keys: Optional[List[str]] = None,
-        keep_offsets: bool = False,
-        override_existing: bool = True,
-        copy_input: bool = True,
+            self,
+            payload: Any,
+            entity_keys: Optional[List[str]] = None,
+            keep_offsets: bool = False,
+            override_existing: bool = True,
+            copy_input: bool = True,
     ) -> Any:
         """
         输入：extracted_data JSON（或 JSON 字符串）
@@ -437,5 +435,75 @@ class EntityRecService:
 
         return data
 
+    def extract_entities(self, text: str) -> List[Dict[str, Any]]:
+        """
+        兼容接口：从文本中提取实体
+        """
+        return self.extract_entities_from_text(raw_text=text)
 
+    def recognize(self, text: str) -> List[Dict[str, Any]]:
+        """
+        兼容接口：识别文本中的实体
+        """
+        return self.extract_entities_from_text(raw_text=text)
+
+    def extract_entities_from_json(self, json_data: Dict) -> List[Dict]:
+        """
+        从相似度分析的JSON结果中提取实体
+        保持原始text字段不变
+        """
+        results = []
+
+        if isinstance(json_data, dict):
+            # 单个文档
+            if "text" in json_data:
+                entities = self.extract_entities(json_data["text"])
+                result = {
+                    "page": json_data.get("page"),
+                    "text": json_data["text"],  # 保持原始text不变
+                    "entities": entities
+                }
+                results.append(result)
+
+        elif isinstance(json_data, list):
+            # 多个文档
+            for doc in json_data:
+                if isinstance(doc, dict) and "text" in doc:
+                    entities = self.extract_entities(doc["text"])
+                    result = {
+                        "page": doc.get("page"),
+                        "text": doc["text"],  # 保持原始text不变
+                        "entities": entities
+                    }
+                    results.append(result)
+
+        return results
+
+
+def extract_entities_from_text(raw_text: str) -> List[Dict[str, Any]]:
+    """外部调用的函数，直接使用默认服务实例"""
+    return default_entity_rec_service.extract_entities_from_text(raw_text)
+
+
+def extract_entities_from_json(json_data: Dict) -> List[Dict]:
+    """外部调用的函数，直接使用默认服务实例"""
+    return default_entity_rec_service.extract_entities_from_json(json_data)
+
+
+def extract_entities(text: str) -> List[Dict[str, Any]]:
+    """外部调用的函数，直接使用默认服务实例"""
+    return default_entity_rec_service.extract_entities(text)
+
+
+def recognize(text: str) -> List[Dict[str, Any]]:
+    """外部调用的函数，直接使用默认服务实例"""
+    return default_entity_rec_service.recognize(text)
+
+
+def enrich_extracted_data(payload: Any) -> Any:
+    """外部调用的函数，直接使用默认服务实例"""
+    return default_entity_rec_service.enrich_extracted_data(payload)
+
+
+# 全局实例
 default_entity_rec_service = EntityRecService()

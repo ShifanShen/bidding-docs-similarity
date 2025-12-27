@@ -21,7 +21,6 @@ from app.models.errors import ErrorCode, ErrorMessage, get_error_response
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/similarity", tags=["相似度分析"])
 similarity_service = SimilarityService()
-entity_service = EntityRecognitionService() #新增，实例化实体识别服务
 
 
 @router.post(
@@ -306,39 +305,6 @@ async def analyze_extracted_texts(request: AnalyzeExtractedRequest):
             "bid_files": [{"file_name": bf.file_name, "texts": [t.dict() for t in bf.texts]} for bf in request.bid_files]
         }
         
-        #新增开始
-        # 为招标文件文本添加实体
-        tender_texts = extracted_data.get('tender_texts', [])
-        tender_texts_with_entities = []
-        for text_item in tender_texts:
-            entities = entity_service.extract_entities(text_item.get('text', ''))
-            new_item = text_item.copy()
-            new_item['entities'] = entities
-            tender_texts_with_entities.append(new_item)
-        
-        # 为投标文件文本添加实体
-        bid_files = extracted_data.get('bid_files', [])
-        bid_files_with_entities = []
-        for bid_file in bid_files:
-            texts = bid_file.get('texts', [])
-            texts_with_entities = []
-            for text_item in texts:
-                entities = entity_service.extract_entities(text_item.get('text', ''))
-                new_item = text_item.copy()
-                new_item['entities'] = entities
-                texts_with_entities.append(new_item)
-            
-            new_bid_file = bid_file.copy()
-            new_bid_file['texts'] = texts_with_entities
-            bid_files_with_entities.append(new_bid_file)
-        
-        # 使用增强后的数据进行相似度分析
-        enhanced_data = {
-            'tender_texts': tender_texts_with_entities,
-            'bid_files': bid_files_with_entities
-        }
-        #新增，结束
-
         # 启动分析任务
         task_id = similarity_service.start_analysis_from_extracted_texts(extracted_data)
         
