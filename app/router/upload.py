@@ -6,13 +6,17 @@ import logging
 from typing import List
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
-from app.service.similarity_service import SimilarityService
+from app.service.service_manager import get_similarity_service
 from app.models.schemas import FileUploadResponse
 from app.models.errors import ErrorCode, ErrorMessage, get_error_response
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/upload", tags=["文件上传"])
-similarity_service = SimilarityService()
+
+# 延迟获取服务实例，避免在模块导入时初始化
+def get_service():
+    """获取相似度分析服务实例"""
+    return get_similarity_service()
 
 
 @router.post(
@@ -35,7 +39,7 @@ async def upload_files(
         file_paths = []
         for file in files:
             try:
-                file_path = similarity_service.save_file(
+                file_path = get_service().save_file(
                     await file.read(),
                     file.filename or "uploaded_file"
                 )

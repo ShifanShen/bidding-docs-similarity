@@ -63,7 +63,8 @@ class SimilarityService:
         self.min_text_length = self.config.MIN_TEXT_LENGTH
         self.tender_similarity_threshold = self.config.TENDER_SIMILARITY_THRESHOLD
         self.bid_similarity_threshold = self.config.BID_SIMILARITY_THRESHOLD
-        self.batch_size = self.config.BATCH_SIZE
+        # BATCH_SIZE 可能被用户误删/遗漏，做防御性默认值
+        self.batch_size = getattr(self.config, "BATCH_SIZE", 1000)
         self.max_task_timeout = self.config.MAX_TASK_TIMEOUT
         self.memory_cleanup_interval = self.config.MEMORY_CLEANUP_INTERVAL
         self.similarity_top_k = self.config.SIMILARITY_TOP_K
@@ -81,11 +82,26 @@ class SimilarityService:
         
     def _load_text2vec_model(self) -> SentenceTransformer:
         """加载本地文本向量模型"""
-        model_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../local_text2vec_model'))
-        model = SentenceTransformer(model_path)
-        if self.config.ENABLE_GPU and torch.cuda.is_available():
-            model = model.to('cuda')
-        return model
+        try:
+            model_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../local_text2vec_model'))
+            logger.info(f"开始加载text2vec模型: {model_path}")
+            
+            if not os.path.exists(model_path):
+                raise FileNotFoundError(f"模型路径不存在: {model_path}")
+            
+            model = SentenceTransformer(model_path)
+            
+            if self.config.ENABLE_GPU and torch.cuda.is_available():
+                logger.info("使用GPU加速")
+                model = model.to('cuda')
+            else:
+                logger.info("使用CPU模式")
+            
+            logger.info("text2vec模型加载成功")
+            return model
+        except Exception as e:
+            logger.error(f"text2vec模型加载失败: {str(e)}", exc_info=True)
+            raise RuntimeError(f"无法加载text2vec模型: {str(e)}") from e
 
     def _encode_texts(self, texts: List[str]) -> np.ndarray:
         """对文本列表进行向量化"""
@@ -110,16 +126,17 @@ class SimilarityService:
             f.write(file_bytes)
         return save_path
 
-    def start_analysis(self, tender_file_path: str, bid_file_paths: List[str]) -> str:
+    def start_analysis(self, tender_file_path: Optional[str], bid_file_paths: List[str]) -> str:
         """启动分析任务"""
         task_id = str(uuid.uuid4())
+        tender_basename = os.path.basename(tender_file_path) if tender_file_path else ""
         task_info = {
             "status": "pending",
             "result": None,
             "progress": {"current": 0, "total": 1},
             "created_time": time.time(),
             "file_info": {
-                "tender_file": os.path.basename(tender_file_path),
+                "tender_file": tender_basename,
                 "bid_files": [os.path.basename(p) for p in bid_file_paths],
                 "bid_count": len(bid_file_paths)
             }
@@ -167,9 +184,10 @@ class SimilarityService:
                 logger.error(f"提取数据缺少必要字段: {field}")
                 return False
         
-        # 检查招标文件文本
-        if not extracted_data.get('tender_texts') or len(extracted_data['tender_texts']) == 0:
-            logger.error("招标文件文本为空")
+        # 招标文件文本允许为空（为空时仅做投标文件之间互相比对）
+        tender_texts = extracted_data.get('tender_texts') or []
+        if not isinstance(tender_texts, list):
+            logger.error("tender_texts字段类型不正确")
             return False
         
         # 检查投标文件
@@ -194,8 +212,8 @@ class SimilarityService:
             # 获取提取数据
             extracted_data = self.tasks[task_id]["extracted_data"]
             
-            # 处理招标文件文本 - 按页面格式处理
-            tender_texts = extracted_data['tender_texts']
+            # 处理招标文件文本 - 按页面格式处理（允许为空）
+            tender_texts = extracted_data.get('tender_texts') or []
             tender_segments = []
             for text_data in tender_texts:
                 # 优先使用已经切好的 segments，若无则用整页文本切分
@@ -205,16 +223,25 @@ class SimilarityService:
                     seg_list = split_text_to_segments(page_text) if page_text else []
                 for seg in seg_list:
                     if seg and len(seg.strip()) >= self.min_text_length:
+                        original_seg = seg  # 保存原始文本
                         clean_text = remove_stopwords(seg, list(self.stopwords))
                         if clean_text:
                             grammar_errors = detect_grammar_errors(clean_text)
                             tender_segments.append({
                                 'page': text_data.get('page', 1),
-                                'text': clean_text,
+                                'text': clean_text,  # 处理后的文本（用于相似度分析）
+                                'original_text': original_seg,  # 原始文本（用于返回）
                                 'grammar_errors': grammar_errors,
                                 'is_table_cell': False
                             })
             
+            # 若无招标文件，则 tender_vecs 为空，后续不会做“剔除与招标文件高度相似的片段”
+            tender_vecs = np.zeros((0, 384), dtype=np.float32)
+            if tender_segments:
+                tender_vecs = self._batch_encode([s['text'] for s in tender_segments])
+                if isinstance(tender_vecs, list):
+                    tender_vecs = np.array(tender_vecs)
+
             # 处理投标文件文本
             bid_files_data = extracted_data['bid_files']
             bid_file_paths = [bid_file['file_name'] for bid_file in bid_files_data]
@@ -230,12 +257,14 @@ class SimilarityService:
                         seg_list = split_text_to_segments(page_text) if page_text else []
                     for seg in seg_list:
                         if seg and len(seg.strip()) >= self.min_text_length:
+                            original_seg = seg  # 保存原始文本
                             clean_text = remove_stopwords(seg, list(self.stopwords))
                             if clean_text:
                                 grammar_errors = detect_grammar_errors(clean_text)
                                 file_segments.append({
                                     'page': text_data.get('page', 1),
-                                    'text': clean_text,
+                                    'text': clean_text,  # 处理后的文本（用于相似度分析）
+                                    'original_text': original_seg,  # 原始文本（用于返回）
                                     'grammar_errors': grammar_errors,
                                     'is_table_cell': False
                                 })
@@ -453,7 +482,7 @@ class SimilarityService:
                 torch.cuda.empty_cache()
             self.cleanup_counter = 0
 
-    def _save_extracted_texts(self, task_id: str, tender_file_path: str, tender_segments: List[Dict[str, Any]],
+    def _save_extracted_texts(self, task_id: str, tender_file_path: Optional[str], tender_segments: List[Dict[str, Any]],
                               bid_file_paths: List[str], bid_segments_list: List[List[Dict[str, Any]]]) -> None:
         """
         保存任务中提取的所有文本到extracted_texts目录
@@ -464,7 +493,7 @@ class SimilarityService:
             extracted_data = {
                 "task_id": task_id,
                 "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
-                "tender_file": os.path.basename(tender_file_path),
+                "tender_file": os.path.basename(tender_file_path) if tender_file_path else "",
                 "tender_texts": [],
                 "bid_files": []
             }
@@ -541,8 +570,11 @@ class SimilarityService:
             
             # 生成文件名：包含任务ID和时间戳
             timestamp = time.strftime('%Y%m%d_%H%M%S')
-            tender_filename = os.path.splitext(os.path.basename(tender_file_path))[0]
-            safe_filename = tender_filename.replace('..', '_').replace('/', '_').replace('\\', '_')
+            if tender_file_path:
+                tender_filename = os.path.splitext(os.path.basename(tender_file_path))[0]
+                safe_filename = tender_filename.replace('..', '_').replace('/', '_').replace('\\', '_')
+            else:
+                safe_filename = "no_tender"
             filename = f"{safe_filename}_{task_id}_{timestamp}.json"
             file_path = os.path.join(EXTRACTED_TEXTS_DIR, filename)
             
@@ -566,7 +598,7 @@ class SimilarityService:
             log_msg += f" | {extra}"
         logger.info(log_msg)
 
-    def _analyze_task(self, task_id: str, tender_file_path: str, bid_file_paths: List[str]) -> None:
+    def _analyze_task(self, task_id: str, tender_file_path: Optional[str], bid_file_paths: List[str]) -> None:
         """
         任务主流程：
         1. 招标文件分段并向量化
@@ -652,10 +684,12 @@ class SimilarityService:
                 self._process_queue()
             self._log_resource('TASK_FINALLY', {'task_id': task_id})
 
-    def _process_tender_document(self, tender_file_path: str) -> Tuple[List[Dict[str, Any]], np.ndarray]:
+    def _process_tender_document(self, tender_file_path: Optional[str]) -> Tuple[List[Dict[str, Any]], np.ndarray]:
         """
         处理招标文件：提取文本并向量化
         """
+        if not tender_file_path:
+            return [], np.zeros((0, 384))
         tender_segments = self._extract_and_segment(tender_file_path)
         tender_texts = [seg['text'] for seg in tender_segments]
         # 确保段落和向量数量一致
@@ -994,16 +1028,20 @@ class SimilarityService:
         # 检查是否为几乎相同的页面
         is_near_identical = self._is_near_identical_page(seg_i['text'], seg_j['text'], sim)
         
+        # 使用原始文本（original_text）而不是处理后的文本（text）
+        original_text_i = seg_i.get('original_text', seg_i['text'])
+        original_text_j = seg_j.get('original_text', seg_j['text'])
+        
         detail = {
             'bid_file': os.path.basename(bid_file_i),
             'page': seg_i['page'],
-            'text': seg_i['text'],
+            'text': original_text_i,  # 使用原始文本，保持原文完整性
             'grammar_errors': seg_i.get('grammar_errors', []),
             'similar_with': os.path.basename(bid_file_j),
             'similar_page': seg_j['page'],
             'similarity': float(f'{sim:.4f}'),
             'is_near_identical': is_near_identical,  # 标记是否为几乎相同页面
-            'similar_text': seg_j['text'],
+            'similar_text': original_text_j,  # 使用原始文本，保持原文完整性
             'similar_grammar_errors': seg_j.get('grammar_errors', []),
             'order_changed': evade_results['order_changed'],
             'stopword_evade': evade_results['stopword_evade'],
@@ -1072,13 +1110,15 @@ class SimilarityService:
         for file_idx, segs in enumerate(filtered_bid_segments):
             for seg in segs:
                 for err in seg.get('grammar_errors', []):
-                    key = (err, seg['text'])
+                    # 使用原始文本进行匹配和返回
+                    original_text = seg.get('original_text', seg['text'])
+                    key = (err, original_text)
                     if key not in grammar_error_map:
                         grammar_error_map[key] = []
                     grammar_error_map[key].append({
                         'bid_file': os.path.basename(bid_file_paths[file_idx]),
                         'page': seg['page'],
-                        'text': seg['text']
+                        'text': original_text  # 使用原始文本
                     })
         
         # 只保留出现在多份文件的相同语法错误

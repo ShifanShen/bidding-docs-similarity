@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import os
 import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -22,6 +23,8 @@ from app.config.entity_rec_config import (
     RE_PHONE,
     RE_IDCARD,
 )
+
+logger = logging.getLogger(__name__)
 
 # =========================
 # 1) 工具：文本清理/切分
@@ -89,22 +92,44 @@ def chunk_text(text: str, max_chars: int = 1800) -> List[str]:
 def load_hanlp_mtl_model():
     """
     默认 CPU（更稳）：ENTITY_REC_USE_GPU=1 才用 GPU
+    支持多种模型回退策略，确保服务可用性
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    
     use_gpu = os.getenv("ENTITY_REC_USE_GPU", "0") == "1"
     if not use_gpu:
         os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
-    try:
-        nlp = hanlp.load(hanlp.pretrained.mtl.CLOSE_TOK_POS_NER_SRL_DEP_SDP_CON_ELECTRA_SMALL_ZH)
-    except Exception:
-        nlp = hanlp.load(hanlp.pretrained.mtl.OPEN_TOK_NER_ELECTRA_SMALL_ZH)
-
-    try:
-        nlp.eval()
-    except Exception:
-        pass
-
-    return nlp
+    # 尝试加载的模型列表（按优先级）
+    model_candidates = [
+        hanlp.pretrained.mtl.CLOSE_TOK_POS_NER_SRL_DEP_SDP_CON_ELECTRA_SMALL_ZH,
+        # hanlp.pretrained.mtl.OPEN_TOK_NER_ELECTRA_SMALL_ZH,
+    ]
+    
+    last_error = None
+    for model_name in model_candidates:
+        try:
+            logger.info(f"尝试加载HanLP模型: {model_name}")
+            nlp = hanlp.load(model_name)
+            
+            # 尝试设置为评估模式
+            try:
+                nlp.eval()
+            except Exception as e:
+                logger.warning(f"设置HanLP评估模式失败（可忽略）: {str(e)}")
+            
+            logger.info(f"HanLP模型加载成功: {model_name}")
+            return nlp
+        except Exception as e:
+            last_error = e
+            logger.warning(f"加载HanLP模型失败 {model_name}: {str(e)}")
+            continue
+    
+    # 所有模型都加载失败
+    error_msg = f"所有HanLP模型加载失败，最后一个错误: {str(last_error)}"
+    logger.error(error_msg)
+    raise RuntimeError(error_msg)
 
 
 def pick_ner_key(doc: Dict[str, Any]) -> Optional[str]:
@@ -292,12 +317,28 @@ def dedup_keep_order(items: List[str]) -> List[str]:
 class EntityRecService:
     def __init__(self):
         self._nlp = None
+        self._nlp_load_error = None
 
     @property
     def nlp(self):
-        if self._nlp is None:
-            self._nlp = load_hanlp_mtl_model()
+        if self._nlp is None and self._nlp_load_error is None:
+            try:
+                self._nlp = load_hanlp_mtl_model()
+            except Exception as e:
+                self._nlp_load_error = str(e)
+                logger.error(f"HanLP模型加载失败: {str(e)}")
+                raise
+        elif self._nlp_load_error:
+            raise RuntimeError(f"HanLP模型不可用: {self._nlp_load_error}")
         return self._nlp
+    
+    def is_hanlp_available(self) -> bool:
+        """检查HanLP是否可用"""
+        try:
+            _ = self.nlp
+            return True
+        except Exception:
+            return False
 
     def extract_entities_from_text(
             self,
@@ -322,24 +363,34 @@ class EntityRecService:
         persons: List[str] = []
         companies: List[str] = []
 
+        # 尝试使用HanLP，如果失败则仅使用正则
+        use_hanlp = False
+        try:
+            if self.is_hanlp_available():
+                use_hanlp = True
+                for ch in chunk_text(view_text, max_chars=max_chars_per_chunk):
+                    doc = self.nlp(ch)
+                    if not isinstance(doc, dict):
+                        continue
+
+                    for ent_text, lab in ner_spans_from_doc(doc):
+                        lab2 = normalize_label(lab)
+
+                        if lab2 == "PERSON" and "人名" in entity_keys:
+                            nm = clean_name(ent_text)
+                            if nm:
+                                persons.append(nm)
+
+                        elif lab2 == "ORG" and "公司" in entity_keys:
+                            cp = clean_company(ent_text)
+                            if cp and is_bid_company_name(cp):
+                                companies.append(cp)
+        except Exception as e:
+            logger.warning(f"HanLP处理失败，仅使用正则: {str(e)}")
+            use_hanlp = False
+
+        # 正则兜底（无论HanLP是否成功都执行）
         for ch in chunk_text(view_text, max_chars=max_chars_per_chunk):
-            doc = self.nlp(ch)
-            if not isinstance(doc, dict):
-                continue
-
-            for ent_text, lab in ner_spans_from_doc(doc):
-                lab2 = normalize_label(lab)
-
-                if lab2 == "PERSON" and "人名" in entity_keys:
-                    nm = clean_name(ent_text)
-                    if nm:
-                        persons.append(nm)
-
-                elif lab2 == "ORG" and "公司" in entity_keys:
-                    cp = clean_company(ent_text)
-                    if cp and is_bid_company_name(cp):
-                        companies.append(cp)
-
             # KV兜底：提示词 + 冒号后的名字
             if "人名" in entity_keys:
                 for m in RE_NAME_KV.finditer(ch):
@@ -347,7 +398,7 @@ class EntityRecService:
                     if nm:
                         persons.append(nm)
 
-            # 公司兜底：仅强公司后缀（不再把管理局/委员会/中心之类塞进“公司”）
+            # 公司兜底：仅强公司后缀（不再把管理局/委员会/中心之类塞进"公司"）
             if "公司" in entity_keys:
                 for m in RE_COMPANY_STRONG.finditer(ch):
                     cp = clean_company(m.group(0))
@@ -480,30 +531,53 @@ class EntityRecService:
         return results
 
 
+# 全局实例（延迟初始化，避免在模块导入时加载HanLP模型）
+# 注意：此实例仅用于向后兼容，新代码应使用 service_manager.get_entity_rec_service()
+default_entity_rec_service = None
+
+def _get_default_entity_rec_service():
+    """延迟获取默认实体识别服务实例"""
+    global default_entity_rec_service
+    if default_entity_rec_service is None:
+        default_entity_rec_service = EntityRecService()
+    return default_entity_rec_service
+
+# 为了向后兼容，保留直接访问方式（但延迟初始化）
+def __getattr__(name):
+    if name == 'default_entity_rec_service':
+        return _get_default_entity_rec_service()
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
+
 def extract_entities_from_text(raw_text: str) -> List[Dict[str, Any]]:
     """外部调用的函数，直接使用默认服务实例"""
-    return default_entity_rec_service.extract_entities_from_text(raw_text)
+    return _get_default_entity_rec_service().extract_entities_from_text(raw_text)
 
 
 def extract_entities_from_json(json_data: Dict) -> List[Dict]:
     """外部调用的函数，直接使用默认服务实例"""
-    return default_entity_rec_service.extract_entities_from_json(json_data)
+    return _get_default_entity_rec_service().extract_entities_from_json(json_data)
 
 
 def extract_entities(text: str) -> List[Dict[str, Any]]:
     """外部调用的函数，直接使用默认服务实例"""
-    return default_entity_rec_service.extract_entities(text)
+    return _get_default_entity_rec_service().extract_entities(text)
 
 
 def recognize(text: str) -> List[Dict[str, Any]]:
     """外部调用的函数，直接使用默认服务实例"""
-    return default_entity_rec_service.recognize(text)
+    return _get_default_entity_rec_service().recognize(text)
 
 
 def enrich_extracted_data(payload: Any) -> Any:
     """外部调用的函数，直接使用默认服务实例"""
-    return default_entity_rec_service.enrich_extracted_data(payload)
+    return _get_default_entity_rec_service().enrich_extracted_data(payload)
 
 
-# 全局实例
-default_entity_rec_service = EntityRecService()
+
+if __name__ == "__main__":
+    # 测试代码
+    import hanlp
+    test_text = "2023年10月1日，在中国北京，张三与李四在一家科技公司合作开发了一个新的智能机器人项目。"
+    entities = extract_entities(test_text)
+    print(entities)

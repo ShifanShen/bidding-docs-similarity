@@ -28,33 +28,8 @@ async def get_config(config_type: str = "all"):
         
         if config_type == "similarity":
             # 获取相似度配置
-            config_dict = {
-                "STORAGE_DIR": default_config.STORAGE_DIR,
-                "MAX_CONCURRENT_TASKS": default_config.MAX_CONCURRENT_TASKS,
-                "MAX_TASK_TIMEOUT": default_config.MAX_TASK_TIMEOUT,
-                "MIN_TEXT_LENGTH": default_config.MIN_TEXT_LENGTH,
-                "MIN_SEGMENT_LENGTH": default_config.MIN_SEGMENT_LENGTH,
-                "MAX_SEGMENT_LENGTH": default_config.MAX_SEGMENT_LENGTH,
-                "BATCH_SIZE": default_config.BATCH_SIZE,
-                "ENABLE_OCR": default_config.ENABLE_OCR,
-                "DETECTION_MODE": default_config.DETECTION_MODE,
-                "PAGE_LEVEL_DETECTION": default_config.PAGE_LEVEL_DETECTION,
-                "ENABLE_TABLE_DETECTION": default_config.ENABLE_TABLE_DETECTION,
-                "TABLE_MIN_ROWS": default_config.TABLE_MIN_ROWS,
-                "TENDER_SIMILARITY_THRESHOLD": default_config.TENDER_SIMILARITY_THRESHOLD,
-                "BID_SIMILARITY_THRESHOLD": default_config.BID_SIMILARITY_THRESHOLD,
-                "NEAR_IDENTICAL_THRESHOLD": default_config.NEAR_IDENTICAL_THRESHOLD,
-                "HIGH_SIMILARITY_THRESHOLD": default_config.HIGH_SIMILARITY_THRESHOLD,
-                "VERY_HIGH_SIMILARITY_THRESHOLD": default_config.VERY_HIGH_SIMILARITY_THRESHOLD,
-                "SEMANTIC_EVADE_LOWER_THRESHOLD": default_config.SEMANTIC_EVADE_LOWER_THRESHOLD,
-                "SEMANTIC_EVADE_UPPER_THRESHOLD": default_config.SEMANTIC_EVADE_UPPER_THRESHOLD,
-                "SYNONYM_TOKEN_COUNT_DIFF_THRESHOLD": default_config.SYNONYM_TOKEN_COUNT_DIFF_THRESHOLD,
-                "COMMON_TERM_COUNT_THRESHOLD": default_config.COMMON_TERM_COUNT_THRESHOLD,
-                "ENABLE_GPU": default_config.ENABLE_GPU,
-                "MEMORY_CLEANUP_INTERVAL": default_config.MEMORY_CLEANUP_INTERVAL,
-                "SIMILARITY_TOP_K": default_config.SIMILARITY_TOP_K,
-                "LOG_LEVEL": default_config.LOG_LEVEL,
-            }
+            # 仅返回“用户建议调整”的字段，避免一堆高级参数干扰使用
+            config_dict = {k: getattr(default_config, k) for k in SimilarityConfig.USER_TUNABLE_FIELDS}
             
             return ConfigGetResponse(
                 code=ErrorCode.SUCCESS,
@@ -95,33 +70,7 @@ async def get_config(config_type: str = "all"):
             
         elif config_type == "all":
             # 获取所有配置
-            similarity_config = {
-                "STORAGE_DIR": default_config.STORAGE_DIR,
-                "MAX_CONCURRENT_TASKS": default_config.MAX_CONCURRENT_TASKS,
-                "MAX_TASK_TIMEOUT": default_config.MAX_TASK_TIMEOUT,
-                "MIN_TEXT_LENGTH": default_config.MIN_TEXT_LENGTH,
-                "MIN_SEGMENT_LENGTH": default_config.MIN_SEGMENT_LENGTH,
-                "MAX_SEGMENT_LENGTH": default_config.MAX_SEGMENT_LENGTH,
-                "BATCH_SIZE": default_config.BATCH_SIZE,
-                "ENABLE_OCR": default_config.ENABLE_OCR,
-                "DETECTION_MODE": default_config.DETECTION_MODE,
-                "PAGE_LEVEL_DETECTION": default_config.PAGE_LEVEL_DETECTION,
-                "ENABLE_TABLE_DETECTION": default_config.ENABLE_TABLE_DETECTION,
-                "TABLE_MIN_ROWS": default_config.TABLE_MIN_ROWS,
-                "TENDER_SIMILARITY_THRESHOLD": default_config.TENDER_SIMILARITY_THRESHOLD,
-                "BID_SIMILARITY_THRESHOLD": default_config.BID_SIMILARITY_THRESHOLD,
-                "NEAR_IDENTICAL_THRESHOLD": default_config.NEAR_IDENTICAL_THRESHOLD,
-                "HIGH_SIMILARITY_THRESHOLD": default_config.HIGH_SIMILARITY_THRESHOLD,
-                "VERY_HIGH_SIMILARITY_THRESHOLD": default_config.VERY_HIGH_SIMILARITY_THRESHOLD,
-                "SEMANTIC_EVADE_LOWER_THRESHOLD": default_config.SEMANTIC_EVADE_LOWER_THRESHOLD,
-                "SEMANTIC_EVADE_UPPER_THRESHOLD": default_config.SEMANTIC_EVADE_UPPER_THRESHOLD,
-                "SYNONYM_TOKEN_COUNT_DIFF_THRESHOLD": default_config.SYNONYM_TOKEN_COUNT_DIFF_THRESHOLD,
-                "COMMON_TERM_COUNT_THRESHOLD": default_config.COMMON_TERM_COUNT_THRESHOLD,
-                "ENABLE_GPU": default_config.ENABLE_GPU,
-                "MEMORY_CLEANUP_INTERVAL": default_config.MEMORY_CLEANUP_INTERVAL,
-                "SIMILARITY_TOP_K": default_config.SIMILARITY_TOP_K,
-                "LOG_LEVEL": default_config.LOG_LEVEL,
-            }
+            similarity_config = {k: getattr(default_config, k) for k in SimilarityConfig.USER_TUNABLE_FIELDS}
             
             ocr_config = {
                 "OCR_THRESHOLD": default_paddle_ocr_config.OCR_THRESHOLD,
@@ -184,18 +133,8 @@ async def update_config(request: ConfigUpdateRequest):
         
         if config_type == "similarity":
             # 更新相似度配置
-            valid_fields = [
-                "MAX_CONCURRENT_TASKS", "MAX_TASK_TIMEOUT", "MIN_TEXT_LENGTH",
-                "MIN_SEGMENT_LENGTH", "MAX_SEGMENT_LENGTH", "BATCH_SIZE",
-                "ENABLE_OCR", "DETECTION_MODE", "PAGE_LEVEL_DETECTION",
-                "ENABLE_TABLE_DETECTION", "TABLE_MIN_ROWS",
-                "TENDER_SIMILARITY_THRESHOLD", "BID_SIMILARITY_THRESHOLD",
-                "NEAR_IDENTICAL_THRESHOLD", "HIGH_SIMILARITY_THRESHOLD",
-                "VERY_HIGH_SIMILARITY_THRESHOLD", "SEMANTIC_EVADE_LOWER_THRESHOLD",
-                "SEMANTIC_EVADE_UPPER_THRESHOLD", "SYNONYM_TOKEN_COUNT_DIFF_THRESHOLD",
-                "COMMON_TERM_COUNT_THRESHOLD", "ENABLE_GPU",
-                "MEMORY_CLEANUP_INTERVAL", "SIMILARITY_TOP_K", "LOG_LEVEL"
-            ]
+            # 仅允许更新“用户建议调整”的字段（高级参数默认不开放，避免误操作导致不稳定）
+            valid_fields = list(SimilarityConfig.USER_TUNABLE_FIELDS)
             
             for key, value in request.config.items():
                 if key not in valid_fields:

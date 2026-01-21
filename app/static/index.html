@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>投标文件相似度检测系统</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Bootstrap CSS - 多CDN备用方案（通过JS动态加载） -->
     <style>
         body { background: #f8f9fa; }
         .container { max-width: 700px; margin-top: 40px; background: #fff; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); padding: 32px 28px; }
@@ -23,7 +23,7 @@
     <form id="upload-form">
         <div class="mb-3">
             <label for="tender-file" class="form-label">招标文件（PDF/Word）</label>
-            <input class="form-control" type="file" id="tender-file" name="tender_file" accept=".pdf,.doc,.docx" required>
+            <input class="form-control" type="file" id="tender-file" name="tender_file" accept=".pdf,.doc,.docx">
         </div>
         <div class="mb-3">
             <label for="bid-files" class="form-label">投标文件（可多选，PDF/Word）</label>
@@ -78,11 +78,173 @@
   </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<!-- Bootstrap CSS/JS - 本地优先 + 多CDN备用方案 -->
+<script>
+// 本地资源路径（优先使用）
+const BOOTSTRAP_LOCAL_CSS = '/static/libs/bootstrap/5.3.2/bootstrap.min.css';
+const BOOTSTRAP_LOCAL_JS = '/static/libs/bootstrap/5.3.2/bootstrap.bundle.min.js';
+
+// CDN资源列表（按优先级排序，作为备用）
+const BOOTSTRAP_CSS_CDNS = [
+    'https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css',
+    'https://cdn.bootcdn.net/ajax/libs/bootstrap/5.3.2/css/bootstrap.min.css',
+    'https://unpkg.com/bootstrap@5.3.2/dist/css/bootstrap.min.css',
+    'https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.2/css/bootstrap.min.css'
+];
+
+const BOOTSTRAP_JS_CDNS = [
+    'https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js',
+    'https://cdn.bootcdn.net/ajax/libs/bootstrap/5.3.2/js/bootstrap.bundle.min.js',
+    'https://unpkg.com/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js',
+    'https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.2/js/bootstrap.bundle.min.js'
+];
+
+// 显示CDN加载错误提示
+function showCdnError(message) {
+    console.error(message);
+    const errorDiv = document.createElement('div');
+    errorDiv.className = 'alert alert-warning';
+    errorDiv.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;margin:0;text-align:center;';
+    errorDiv.innerHTML = '<strong>警告：</strong>' + message + ' <button onclick="location.reload()" class="btn btn-sm btn-primary ms-2">刷新重试</button>';
+    document.body.insertBefore(errorDiv, document.body.firstChild);
+}
+
+// 动态加载CSS，优先使用本地资源，失败时回退到CDN
+function loadBootstrapCss(useLocal = true, cdnIndex = 0) {
+    // 优先尝试本地资源
+    if (useLocal) {
+        const link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = BOOTSTRAP_LOCAL_CSS;
+        link.onerror = function() {
+            console.warn('本地Bootstrap CSS加载失败，切换到CDN备用方案...');
+            loadBootstrapCss(false, 0);  // 切换到CDN
+        };
+        link.onload = function() {
+            console.log('✓ Bootstrap CSS 从本地资源成功加载');
+        };
+        document.head.appendChild(link);
+        return;
+    }
+    
+    // CDN备用方案
+    if (cdnIndex >= BOOTSTRAP_CSS_CDNS.length) {
+        showCdnError('无法加载Bootstrap CSS，页面样式可能异常');
+        return;
+    }
+    
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = BOOTSTRAP_CSS_CDNS[cdnIndex];
+    link.onerror = function() {
+        console.warn(`Bootstrap CSS CDN ${cdnIndex + 1} 加载失败，尝试下一个...`);
+        loadBootstrapCss(false, cdnIndex + 1);
+    };
+    link.onload = function() {
+        console.log(`✓ Bootstrap CSS 从 CDN ${cdnIndex + 1} 成功加载`);
+    };
+    document.head.appendChild(link);
+}
+
+// 动态加载Bootstrap JS，优先使用本地资源，失败时回退到CDN
+function loadBootstrapScript(useLocal = true, cdnIndex = 0) {
+    // 优先尝试本地资源
+    if (useLocal) {
+        const script = document.createElement('script');
+        script.src = BOOTSTRAP_LOCAL_JS;
+        script.onerror = function() {
+            console.warn('本地Bootstrap JS加载失败，切换到CDN备用方案...');
+            loadBootstrapScript(false, 0);  // 切换到CDN
+        };
+        script.onload = function() {
+            console.log('✓ Bootstrap JS 从本地资源成功加载');
+            // 确保Bootstrap加载后再标记应用已初始化
+            if (typeof bootstrap !== 'undefined') {
+                if (typeof window.appInitialized === 'undefined') {
+                    window.appInitialized = true;
+                }
+            } else {
+                setTimeout(function() {
+                    if (typeof bootstrap !== 'undefined') {
+                        if (typeof window.appInitialized === 'undefined') {
+                            window.appInitialized = true;
+                        }
+                    } else {
+                        console.warn('Bootstrap对象未定义，但继续执行应用代码');
+                        if (typeof window.appInitialized === 'undefined') {
+                            window.appInitialized = true;
+                        }
+                    }
+                }, 100);
+            }
+        };
+        document.head.appendChild(script);
+        return;
+    }
+    
+    // CDN备用方案
+    if (cdnIndex >= BOOTSTRAP_JS_CDNS.length) {
+        showCdnError('无法加载Bootstrap JS，部分功能可能无法使用');
+        // 即使Bootstrap加载失败，也尝试初始化应用（部分功能可能受限）
+        if (typeof window.appInitialized === 'undefined') {
+            window.appInitialized = true;
+        }
+        return;
+    }
+    
+    const script = document.createElement('script');
+    script.src = BOOTSTRAP_JS_CDNS[cdnIndex];
+    script.onerror = function() {
+        console.warn(`Bootstrap JS CDN ${cdnIndex + 1} 加载失败，尝试下一个...`);
+        loadBootstrapScript(false, cdnIndex + 1);
+    };
+    script.onload = function() {
+        console.log(`✓ Bootstrap JS 从 CDN ${cdnIndex + 1} 成功加载`);
+        // 确保Bootstrap加载后再标记应用已初始化
+        if (typeof bootstrap !== 'undefined') {
+            if (typeof window.appInitialized === 'undefined') {
+                window.appInitialized = true;
+            }
+        } else {
+            setTimeout(function() {
+                if (typeof bootstrap !== 'undefined') {
+                    if (typeof window.appInitialized === 'undefined') {
+                        window.appInitialized = true;
+                    }
+                } else {
+                    console.warn('Bootstrap对象未定义，但继续执行应用代码');
+                    if (typeof window.appInitialized === 'undefined') {
+                        window.appInitialized = true;
+                    }
+                }
+            }, 100);
+        }
+    };
+    document.head.appendChild(script);
+}
+
+// 页面加载时开始加载Bootstrap资源
+(function() {
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', function() {
+            loadBootstrapCss();
+            loadBootstrapScript();
+        });
+    } else {
+        loadBootstrapCss();
+        loadBootstrapScript();
+    }
+})();
+</script>
 <script>
 let lastTaskId = null;
 
 function showTaskManager() {
+    // 确保Bootstrap已加载
+    if (typeof bootstrap === 'undefined') {
+        alert('Bootstrap尚未加载完成，请稍候再试');
+        return;
+    }
     const modal = new bootstrap.Modal(document.getElementById('taskModal'));
     modal.show();
     loadTasks();
@@ -157,8 +319,10 @@ async function viewResult(taskId) {
         const resp = await fetch(`/api/analyze/result?task_id=${taskId}`);
         const data = await resp.json();
         if (data.data && data.data.status === 'done') {
-            const modal = bootstrap.Modal.getInstance(document.getElementById('taskModal'));
-            if (modal) modal.hide();
+            if (typeof bootstrap !== 'undefined') {
+                const modal = bootstrap.Modal.getInstance(document.getElementById('taskModal'));
+                if (modal) modal.hide();
+            }
             showResult(data.data.result);
             lastTaskId = taskId;
         } else {
@@ -177,8 +341,8 @@ document.getElementById('upload-form').onsubmit = async function(e) {
     e.preventDefault();
     const tenderFile = document.getElementById('tender-file').files[0];
     const bidFiles = document.getElementById('bid-files').files;
-    if (!tenderFile || bidFiles.length === 0) {
-        alert('请上传招标文件和至少一个投标文件');
+    if (bidFiles.length === 0) {
+        alert('请至少上传一个投标文件');
         return;
     }
     // 显示进度条
@@ -188,9 +352,11 @@ document.getElementById('upload-form').onsubmit = async function(e) {
     progressBar.style.width = '10%';
     progressBar.innerText = '上传中...';
 
-    // 1. 上传文件（新版统一上传，默认第一个为招标文件，其余为投标文件）
+    // 1. 上传文件（新版统一上传：招标文件可选；投标文件必选）
     const formData = new FormData();
-    formData.append('files', tenderFile);
+    if (tenderFile) {
+        formData.append('files', tenderFile);
+    }
     for (let i = 0; i < bidFiles.length; i++) {
         formData.append('files', bidFiles[i]);
     }
@@ -200,13 +366,13 @@ document.getElementById('upload-form').onsubmit = async function(e) {
     });
     let uploadData = await uploadResp.json();
     const filePaths = uploadData?.data?.file_paths || [];
-    if (filePaths.length < 2) {
+    if (filePaths.length < 1) {
         alert('文件上传失败');
         progressDiv.style.display = 'none';
         return;
     }
-    const tenderPath = filePaths[0];
-    const bidPaths = filePaths.slice(1);
+    const tenderPath = tenderFile ? filePaths[0] : null;
+    const bidPaths = tenderFile ? filePaths.slice(1) : filePaths.slice(0);
     progressBar.style.width = '40%';
     progressBar.innerText = '分析任务启动中...';
 

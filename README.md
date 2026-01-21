@@ -74,14 +74,7 @@ docker run -d --name bidding-similarity-app \
   -v %cd%/stopwords.txt:/app/stopwords.txt:ro \
   -v %cd%/tmp_files:/app/tmp_files \
   bidding-docs-similarity
-
-
-docker run -d --name bidding-similarity-app \
-  -p 8020:8020 \
-  -v "$(pwd)/local_text2vec_model:/app/local_text2vec_model:ro" \
-  -v "$(pwd)/stopwords.txt:/app/stopwords.txt:ro" \
-  -v "$(pwd)/tmp_files:/app/tmp_files" \
-  bidding-docs-similarity:latest```
+```
 
 或使用 docker-compose（请将端口映射改为 `8020:8020` 再启动）：
 
@@ -207,6 +200,7 @@ bidding-docs-similarity/
 - 依赖安装慢：建议 `pip install uv` 后使用 `uv pip install -e .`。
 - 模型缺失：首次运行需执行 `python download_model.py`，确保 `local_text2vec_model/` 目录完整。
 - PaddleOCR（CPU）默认启用；若需 GPU，请按官方文档安装对应版本并配置环境变量。
+- **CDN不稳定**：已实现本地优先 + CDN备用方案。运行 `python download_bootstrap.py` 下载本地资源，详情见 `BOOTSTRAP_LOCAL_SETUP.md`。
 
 ---
 

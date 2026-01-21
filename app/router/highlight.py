@@ -1,10 +1,10 @@
-# app/router/highlight.py
 from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi.responses import StreamingResponse
 import json
 import tempfile
 import os
-from app.service.text_utils import text_result_highlight
-from app.service.oss_service import oss_service
+from app.service.text_utils import text_result_highlight_local
+from app.service.service_manager import get_oss_service
 
 router = APIRouter(prefix="/api/highlight", tags=["高亮标记"])
 
@@ -14,7 +14,7 @@ async def highlight_from_files(
     json_file: UploadFile = File(..., description="JSON分析结果文件")
 ):
     """
-    上传PDF和JSON文件，返回高亮后的PDF
+    上传PDF和JSON文件，返回高亮后的PDF（优先本地处理；MinIO可用则同时上传）
     """
     try:
         # 验证文件类型
@@ -38,48 +38,45 @@ async def highlight_from_files(
             tmp_file.write(content)
         
         try:
-            # 上传PDF到MinIO
-            minio_url = oss_service.upload_file(tmp_path, pdf_filename)
-            if not minio_url:
-                raise HTTPException(status_code=500, detail="PDF上传到MinIO失败")
-            
             # 计算details数量
             all_details = json_data["result"]["result"].get("details", [])
             pdf_details = [d for d in all_details if d.get("bid_file") == pdf_filename]
             highlight_count = len(pdf_details)
             
-            # 调用高亮函数
+            # 本地高亮（不依赖MinIO）
             try:
-                highlighted_url = text_result_highlight(minio_url, json_data)
-                # 如果有匹配项
-                if highlight_count > 0:
-                    return {
-                        "success": True,
-                        "message": "PDF高亮处理成功",
-                        "data": {
-                            "original_pdf": pdf_filename,
-                            "original_pdf_url": minio_url,
-                            "highlighted_pdf": pdf_filename,
-                            "highlighted_pdf_url": highlighted_url,
-                            "highlight_count": highlight_count
-                        }
-                    }
-                else:
-                    # 没有匹配项
-                    return {
-                        "success": True,
-                        "message": f"PDF '{pdf_filename}' 中没有找到匹配的相似文本",
-                        "data": {
-                            "original_pdf": pdf_filename,
-                            "original_pdf_url": minio_url,
-                            "highlighted_pdf": pdf_filename,
-                            "highlighted_pdf_url": minio_url,
-                            "highlight_count": 0
-                        }
-                    }
-                    
+                out_path = text_result_highlight_local(tmp_path, json_data, pdf_name=pdf_filename)
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"高亮处理失败: {str(e)}")
+
+            # 若 MinIO 可用，额外上传一份（不影响下载返回）
+            original_url = None
+            highlighted_url = None
+            try:
+                oss = get_oss_service()
+                if oss.is_available():
+                    original_url = oss.upload_file(tmp_path, pdf_filename)
+                    highlighted_url = oss.upload_file(out_path, pdf_filename)
+            except Exception:
+                # 不阻塞主流程
+                pass
+
+            # 返回高亮PDF文件流
+            f = open(out_path, "rb")
+            headers = {
+                "Content-Disposition": f"attachment; filename*=UTF-8''{pdf_filename}",
+            }
+            if original_url:
+                headers["X-Original-MinIO-URL"] = original_url
+            if highlighted_url:
+                headers["X-Highlighted-MinIO-URL"] = highlighted_url
+            headers["X-Highlight-Count"] = str(highlight_count)
+
+            return StreamingResponse(
+                f,
+                media_type="application/pdf",
+                headers=headers,
+            )
             
         finally:
             # 清理临时文件

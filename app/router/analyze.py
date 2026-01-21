@@ -10,7 +10,7 @@ from typing import List, Optional
 from fastapi import APIRouter, UploadFile, File, HTTPException, Body, Query, Form
 from fastapi.responses import StreamingResponse, JSONResponse
 import openpyxl
-from app.service.similarity_service import SimilarityService
+from app.service.service_manager import get_similarity_service
 from app.models.schemas import (
     AnalyzeRequest, AnalyzeResponse, ResultResponse,
     TaskListResponse, CancelTaskRequest, CancelTaskResponse, CleanupTasksRequest,
@@ -20,7 +20,11 @@ from app.models.errors import ErrorCode, ErrorMessage, get_error_response
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/analyze", tags=["相似度分析"])
-similarity_service = SimilarityService()
+
+# 延迟获取服务实例，避免在模块导入时初始化
+def get_service():
+    """获取相似度分析服务实例"""
+    return get_similarity_service()
 
 
 @router.post(
@@ -32,7 +36,7 @@ similarity_service = SimilarityService()
 async def start_analysis(request: AnalyzeRequest):
     """启动相似度分析任务"""
     try:
-        task_id = similarity_service.start_analysis(
+        task_id = get_service().start_analysis(
             request.tender_file_path,
             request.bid_file_paths
         )
@@ -66,7 +70,7 @@ async def get_result(
 ):
     """查询分析结果"""
     try:
-        result = similarity_service.get_result(task_id)
+        result = get_service().get_result(task_id)
         if result is None:
             raise HTTPException(
                 status_code=ErrorCode.NOT_FOUND,
@@ -97,7 +101,7 @@ def export_excel(
 ):
     """导出分析结果为Excel文件"""
     try:
-        result = similarity_service.get_result(task_id)
+        result = get_service().get_result(task_id)
         if not result or result.get('status') != 'done' or not result.get('result'):
             raise HTTPException(
                 status_code=ErrorCode.NOT_FOUND,
@@ -163,7 +167,7 @@ def export_excel(
 async def get_all_tasks():
     """获取所有任务列表"""
     try:
-        tasks = similarity_service.get_all_tasks()
+        tasks = get_service().get_all_tasks()
         return TaskListResponse(
             code=ErrorCode.SUCCESS,
             msg=ErrorMessage.SUCCESS,
@@ -186,7 +190,7 @@ async def get_all_tasks():
 async def cancel_task(request: CancelTaskRequest):
     """取消指定任务"""
     try:
-        success = similarity_service.cancel_task(request.task_id)
+        success = get_service().cancel_task(request.task_id)
         if success:
             return CancelTaskResponse(
                 code=ErrorCode.SUCCESS,
@@ -216,7 +220,7 @@ async def cancel_task(request: CancelTaskRequest):
 async def cleanup_tasks(request: CleanupTasksRequest):
     """清理过期任务"""
     try:
-        similarity_service.cleanup_old_tasks(request.max_age_hours)
+        get_service().cleanup_old_tasks(request.max_age_hours)
         return CleanupTasksResponse(
             code=ErrorCode.SUCCESS,
             msg=f"已清理{request.max_age_hours}小时前的任务"
@@ -240,12 +244,12 @@ async def analyze_extracted_texts(request: AnalyzeExtractedRequest):
     try:
         # 转换为字典格式
         extracted_data = {
-            "tender_texts": [item.dict() for item in request.tender_texts],
+            "tender_texts": [item.dict() for item in (request.tender_texts or [])],
             "bid_files": [{"file_name": bf.file_name, "texts": [t.dict() for t in bf.texts]} for bf in request.bid_files]
         }
         
         # 启动分析任务
-        task_id = similarity_service.start_analysis_from_extracted_texts(extracted_data)
+        task_id = get_service().start_analysis_from_extracted_texts(extracted_data)
         
         return AnalyzeResponse(
             code=ErrorCode.SUCCESS,

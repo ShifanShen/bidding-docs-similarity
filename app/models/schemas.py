@@ -28,7 +28,11 @@ class FileUploadResponse(BaseModel):
 
 class AnalyzeRequest(BaseModel):
     """启动相似度分析请求"""
-    tender_file_path: str = Field(..., description="招标文件路径", example="upload_files/tender_xxx.pdf")
+    tender_file_path: Optional[str] = Field(
+        None,
+        description="招标文件路径（可为空；为空时仅做投标文件之间互相比对）",
+        example="upload_files/tender_xxx.pdf",
+    )
     bid_file_paths: List[str] = Field(..., description="投标文件路径列表", example=["upload_files/bid1.pdf", "upload_files/bid2.pdf"])
     
     class Config:
@@ -173,7 +177,10 @@ class BidFileTexts(BaseModel):
 
 class AnalyzeExtractedRequest(BaseModel):
     """基于已提取文本的分析请求"""
-    tender_texts: List[ExtractedTextItem] = Field(..., description="招标文件文本列表")
+    tender_texts: Optional[List[ExtractedTextItem]] = Field(
+        None,
+        description="招标文件文本列表（可为空；为空时仅做投标文件之间互相比对）",
+    )
     bid_files: List[BidFileTexts] = Field(..., description="投标文件文本列表")
     
     class Config:

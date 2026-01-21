@@ -1,18 +1,19 @@
 """
 文本处理工具模块
 """
+import os
 import re
+import tempfile
+
 import docx
+import fitz
 import pdfplumber
 import logging
 from typing import List, Dict, Any, Optional
 from app.config.similarity_config import default_config
 from app.config.synonyms_config import SYNONYMS
+from app.service.service_manager import get_oss_service
 from app.service.paddle_ocr_service import ocr_service as paddle_ocr_service
-from app.service.oss_service import oss_service
-import fitz
-import tempfile
-import os
 
 logger = logging.getLogger(__name__)
 
@@ -213,11 +214,6 @@ def extract_text_from_docx(docx_path: str) -> List[str]:
 
 def split_text_to_segments(text: str) -> List[str]:
     """将长文本分割为段落，支持多种检测模式"""
-    # 检查是否启用整页检测
-    if hasattr(default_config, 'PAGE_LEVEL_DETECTION') and default_config.PAGE_LEVEL_DETECTION:
-        # 整页检测模式：将整页作为一个段落
-        return [text.strip()] if text.strip() else []
-    
     # 检查检测模式
     detection_mode = getattr(default_config, 'DETECTION_MODE', 'paragraph')
     
@@ -227,6 +223,9 @@ def split_text_to_segments(text: str) -> List[str]:
     elif detection_mode == 'sentence':
         # 句子模式：按句子分割
         return _split_by_sentences(text)
+    elif detection_mode in ('chapter_paragraph', 'chapter'):
+        # 按“章/条款/编号段”切分：更适合招标/投标文件（PDF换行多但自然段不明显）
+        return _split_by_chapter_paragraphs(text)
     else:
         # 段落模式（默认）：智能段落分割
         return _split_by_paragraphs(text)
@@ -248,54 +247,174 @@ def _split_by_sentences(text: str) -> List[str]:
     return sentences
 
 def _split_by_paragraphs(text: str) -> List[str]:
-    """按段落分割文本，保持语义完整性"""
+    """按段落分割文本，保持语义完整性
+    
+    优化策略：
+    1. 优先在自然段落边界（空行）处分割
+    2. 保持句子完整性，不丢失标点符号
+    3. 尽量合并短句形成完整段落
+    4. 避免在句子中间分割
+    """
+    import re
     segments = []
-    current_segment = ""
     min_length = default_config.MIN_SEGMENT_LENGTH
     max_length = default_config.MAX_SEGMENT_LENGTH
 
-    # 按句子分割，保持语义完整性
-    sentences = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
+    # 首先按空行分割成自然段落
+    paragraphs = re.split(r'\n\s*\n', text)
+    
+    for para in paragraphs:
+        para = para.strip()
+        if not para:
             continue
         
-        # 按句号、问号、感叹号等分割句子
-        import re
-        line_sentences = re.split(r'[。！？；]', line)
-        for sent in line_sentences:
-            sent = sent.strip()
-            if sent:
-                sentences.append(sent)
+        # 如果段落本身已经很长，需要进一步分割
+        if len(para) > max_length:
+            # 在长段落中，优先在句号处分割，保持句子完整性
+            para_segments = _split_long_paragraph(para, min_length, max_length)
+            segments.extend(para_segments)
+        elif len(para) >= min_length:
+            # 段落长度合适，直接添加
+            segments.append(para)
+        else:
+            # 段落太短，尝试与下一个段落合并
+            if segments and len(segments[-1]) < max_length * 0.8:
+                # 合并到上一个段落
+                segments[-1] = segments[-1] + "\n" + para
+            else:
+                # 无法合并，单独添加（即使小于最小长度）
+                segments.append(para)
+    
+    # 后处理：合并过短的段落
+    merged_segments = []
+    for seg in segments:
+        if len(seg) < min_length and merged_segments:
+            # 尝试合并到上一个段落
+            if len(merged_segments[-1]) + len(seg) <= max_length:
+                merged_segments[-1] = merged_segments[-1] + "\n" + seg
+            else:
+                merged_segments.append(seg)
+        else:
+            merged_segments.append(seg)
+    
+    return [s.strip() for s in merged_segments if s.strip()]
 
+
+def _split_by_chapter_paragraphs(text: str) -> List[str]:
+    """按“章/条款/编号段”切分，尽量做到“按章一段一段切”
+
+    目标场景：
+    - PDF 抽取文本通常只有单换行（换行=排版换行），很少出现空行作为自然段边界
+    - 招标文件通常有清晰的“章/节/条款编号/列表编号”，更适合用这些作为段落边界
+
+    策略：
+    - 遇到“第X章/第X节/第X部分/第X条”等标题行，开始新段
+    - 遇到“1、/2、/（1）/1.1/2.3.4”等编号行，开始新段
+    - 空行作为硬边界
+    - 不做“短段落合并”，避免把多个条款揉成一段
+    - 超长段落仍按句子边界进一步切分（不破坏标点）
+    """
+    import re
+
+    min_length = getattr(default_config, "MIN_SEGMENT_LENGTH", 100)
+    max_length = getattr(default_config, "MAX_SEGMENT_LENGTH", 1200)
+
+    # 标题/条款行识别（尽量宽松，覆盖中文招标文件常见格式）
+    chapter_re = re.compile(
+        r'^\s*(第[一二三四五六七八九十百千0-9]+[章节部分条卷编篇]|[一二三四五六七八九十]+、)\s+'
+    )
+    # 编号段：1、 2.1 2.3.4 （1） (1) ① 等
+    numbered_re = re.compile(
+        r'^\s*((\d+([.．]\d+){0,4})|(\d+、)|（\d+）|\(\d+\)|[①②③④⑤⑥⑦⑧⑨⑩])\s*'
+    )
+
+    lines = text.splitlines()
+    segments: List[str] = []
+    cur: List[str] = []
+
+    def flush():
+        nonlocal cur
+        if not cur:
+            return
+        seg = "\n".join([l.rstrip() for l in cur]).strip()
+        cur = []
+        if not seg:
+            return
+        if len(seg) > max_length:
+            segments.extend(_split_long_paragraph(seg, min_length, max_length))
+        else:
+            segments.append(seg)
+
+    for raw in lines:
+        line = raw.rstrip()
+        if not line.strip():
+            flush()
+            continue
+
+        is_boundary = bool(chapter_re.match(line)) or bool(numbered_re.match(line))
+        if is_boundary:
+            flush()
+            cur.append(line)
+        else:
+            cur.append(line)
+
+    flush()
+    return [s for s in segments if s.strip()]
+
+
+def _split_long_paragraph(text: str, min_length: int, max_length: int) -> List[str]:
+    """分割超长段落，保持句子完整性"""
+    import re
+    segments = []
+    current_segment = ""
+    
+    # 使用正向预查，保留标点符号
+    # 匹配句子：以句号、问号、感叹号、分号结尾，但保留这些标点
+    sentence_pattern = r'[^。！？；\n]+[。！？；]'
+    sentences = re.findall(sentence_pattern, text)
+    
+    # 处理剩余文本（可能没有标点结尾）
+    remaining = re.sub(sentence_pattern, '', text).strip()
+    if remaining:
+        sentences.append(remaining)
+    
     for sentence in sentences:
-        # 超长句子直接添加
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        
+        # 超长句子直接添加（虽然不应该出现）
         if len(sentence) > max_length:
             if current_segment:
                 segments.append(current_segment.strip())
                 current_segment = ""
             segments.append(sentence)
             continue
-
-        # 合并到当前段落
-        current_segment = current_segment + sentence if current_segment else sentence
-
-        # 达到最小长度时添加到结果，但优先在句号处分割
-        if len(current_segment) >= min_length:
-            # 如果当前句子以句号结尾，立即分割
-            if sentence.endswith(('。', '！', '？', '；')):
+        
+        # 尝试合并到当前段落
+        potential_segment = current_segment + sentence if current_segment else sentence
+        
+        # 如果合并后超过最大长度，先保存当前段落
+        if len(potential_segment) > max_length:
+            if current_segment:
                 segments.append(current_segment.strip())
-                current_segment = ""
-            # 如果接近最大长度，也进行分割
-            elif len(current_segment) >= max_length * 0.8:
-                segments.append(current_segment.strip())
-                current_segment = ""
-
+            current_segment = sentence
+        else:
+            # 可以合并
+            current_segment = potential_segment
+            
+            # 如果达到最小长度且以句号结尾，可以考虑分割
+            # 但优先保持段落完整性，只在接近最大长度时分割
+            if len(current_segment) >= min_length:
+                if len(current_segment) >= max_length * 0.9:
+                    # 接近最大长度，分割
+                    segments.append(current_segment.strip())
+                    current_segment = ""
+    
     # 添加最后一个段落
     if current_segment:
         segments.append(current_segment.strip())
-
+    
     return segments
 
 def remove_stopwords(text: str, stopwords: List[str]) -> str:
@@ -363,10 +482,13 @@ def is_synonym_evade(text1: str, text2: str) -> bool:
     total_tokens = max(len(tokens1), len(tokens2))
     return total_tokens > 0 and synonym_count / total_tokens > 0.1
 
-def text_result_highlight(pdf_oss_url, result_json) -> str:
-    """文本高亮函数"""
-    # 提取PDF对象名
-    pdf_name = os.path.basename(pdf_oss_url)
+def text_result_highlight_local(pdf_path: str, result_json: Dict[str, Any], pdf_name: Optional[str] = None) -> str:
+    """文本高亮函数（本地路径版本）
+
+    返回：高亮后的 PDF 文件路径
+    """
+    if not pdf_name:
+        pdf_name = os.path.basename(pdf_path)
 
     # 提取json文件中的details
     details = []
@@ -374,21 +496,14 @@ def text_result_highlight(pdf_oss_url, result_json) -> str:
     details = [d for d in all_details if d.get("bid_file") == pdf_name]
     if not details:
         logger.warning(f"'{pdf_name}'不存在相似文本")
-        return pdf_oss_url
+        return pdf_path
 
     # 创建临时文件
-    with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_input:
-        input_path = tmp_input.name
     with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_output:
         output_path = tmp_output.name
 
-    # 下载PDF文件
-    if not oss_service.file_exists(pdf_name):
-        raise FileNotFoundError(f"MinIO中不存在'{pdf_name}'")
-    oss_service.download_file(pdf_name, input_path)
-
     # 打开PDF
-    doc = fitz.open(input_path)
+    doc = fitz.open(pdf_path)
 
     # 定义三种高亮颜色
     colors = [(1, 1, 0), (0, 1, 1),(1, 0, 1)]
@@ -466,7 +581,29 @@ def text_result_highlight(pdf_oss_url, result_json) -> str:
     # 保存高亮后的PDF
     doc.save(output_path)
     doc.close()
+    return output_path
 
-    # 上传高亮后的PDF并返回URL
-    result_url = oss_service.upload_file(output_path, pdf_name)
-    return result_url
+
+def text_result_highlight(pdf_oss_url: str, result_json: Dict[str, Any]) -> str:
+    """兼容旧逻辑：传入 MinIO URL，输出高亮后的 MinIO URL（若 MinIO 不可用则抛出明确错误）"""
+    pdf_name = os.path.basename(pdf_oss_url)
+    oss = get_oss_service()
+    if not oss.is_available():
+        raise ConnectionError(f"MinIO不可用，无法从URL高亮: endpoint={oss.config.endpoint}")
+
+    # 下载 -> 本地高亮 -> 上传
+    with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_input:
+        input_path = tmp_input.name
+
+    try:
+        if not oss.file_exists(pdf_name):
+            raise FileNotFoundError(f"MinIO中不存在'{pdf_name}'")
+        oss.download_file(pdf_name, input_path)
+        out_path = text_result_highlight_local(input_path, result_json, pdf_name=pdf_name)
+        return oss.upload_file(out_path, pdf_name)
+    finally:
+        try:
+            if os.path.exists(input_path):
+                os.unlink(input_path)
+        except Exception:
+            pass
