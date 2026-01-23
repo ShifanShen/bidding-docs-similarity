@@ -36,23 +36,28 @@ def get_service():
 async def start_analysis(request: AnalyzeRequest):
     """启动相似度分析任务"""
     try:
-        task_id = get_service().start_analysis(
+        logger.info(f"收到分析请求: tender_file={request.tender_file_path}, bid_files={len(request.bid_file_paths)}")
+        logger.info("正在获取服务实例...")
+        service = get_service()
+        logger.info("服务实例获取成功，正在启动分析任务...")
+        task_id = service.start_analysis(
             request.tender_file_path,
             request.bid_file_paths
         )
+        logger.info(f"分析任务已启动: task_id={task_id}")
         return AnalyzeResponse(
             code=ErrorCode.SUCCESS,
             msg="分析任务已启动",
             data={"task_id": task_id}
         )
     except ValueError as e:
-        logger.error(f"分析任务启动失败: {str(e)}")
+        logger.error(f"分析任务启动失败（参数错误）: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=ErrorCode.BAD_REQUEST,
             detail=get_error_response(ErrorCode.BAD_REQUEST, ErrorMessage.TASK_START_FAILED, str(e))
         )
     except Exception as e:
-        logger.error(f"分析任务启动失败: {str(e)}")
+        logger.error(f"分析任务启动失败（内部错误）: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=ErrorCode.INTERNAL_ERROR,
             detail=get_error_response(ErrorCode.INTERNAL_ERROR, ErrorMessage.TASK_START_FAILED, str(e))

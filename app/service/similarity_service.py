@@ -47,6 +47,7 @@ class SimilarityService:
         
         # 模型和资源初始化
         self.model = self._load_text2vec_model()
+        self.model_lock = Lock()  # 保护模型访问，确保线程安全
         self.stopwords = self._load_stopwords()
         self.stopwords_list = list(self.stopwords)
         
@@ -104,9 +105,14 @@ class SimilarityService:
             raise RuntimeError(f"无法加载text2vec模型: {str(e)}") from e
 
     def _encode_texts(self, texts: List[str]) -> np.ndarray:
-        """对文本列表进行向量化"""
+        """
+        对文本列表进行向量化
+        注意：使用锁保护，确保模型访问的线程安全
+        """
         texts_without_numbers = [remove_numbers(text) for text in texts]
-        vectors = self.model.encode(texts_without_numbers, convert_to_numpy=True, show_progress_bar=False)
+        # 使用锁保护模型访问，防止多线程并发调用导致死锁
+        with self.model_lock:
+            vectors = self.model.encode(texts_without_numbers, convert_to_numpy=True, show_progress_bar=False)
         # 确保返回float32类型的数组，FAISS需要这种类型
         return vectors.astype(np.float32)
 
@@ -141,8 +147,14 @@ class SimilarityService:
                 "bid_count": len(bid_file_paths)
             }
         }
-        self.tasks[task_id] = task_info
-        self.task_queue.append((task_id, tender_file_path, bid_file_paths))
+        
+        # 快速添加任务到队列，避免长时间持有锁
+        with self.task_lock:
+            self.tasks[task_id] = task_info
+            self.task_queue.append((task_id, tender_file_path, bid_file_paths))
+            logger.info(f"任务已加入队列: {task_id}, 队列长度: {len(self.task_queue)}, 运行中: {self.running_tasks}")
+        
+        # 在锁外处理队列
         self._process_queue()
         return task_id
     
@@ -299,13 +311,24 @@ class SimilarityService:
 
     def _process_queue(self) -> None:
         """处理任务队列，控制并发数"""
+        # 尽快释放锁，避免长时间持有锁
+        tasks_to_start = []
         with self.task_lock:
             while self.running_tasks < self.max_concurrent_tasks and self.task_queue:
                 task_id, tender_file_path, bid_file_paths = self.task_queue.pop(0)
+                # 检查任务是否已被取消
+                if task_id in self.tasks and self.tasks[task_id]["status"] == "cancelled":
+                    continue
                 self.running_tasks += 1
-                thread = Thread(target=self._analyze_task, args=(task_id, tender_file_path, bid_file_paths))
-                thread.daemon = True
-                thread.start()
+                tasks_to_start.append((task_id, tender_file_path, bid_file_paths))
+                logger.info(f"准备启动任务线程: {task_id}, 当前运行任务数: {self.running_tasks}")
+        
+        # 在锁外启动线程，避免阻塞
+        for task_id, tender_file_path, bid_file_paths in tasks_to_start:
+            thread = Thread(target=self._analyze_task, args=(task_id, tender_file_path, bid_file_paths))
+            thread.daemon = True
+            thread.start()
+            logger.info(f"任务线程已启动: {task_id}")
 
     def _extract_and_segment(self, file_path: str) -> List[Dict[str, Any]]:
         """
@@ -408,19 +431,22 @@ class SimilarityService:
         else:
             return []
 
-    def _create_faiss_index(self, dim: int) -> faiss.Index:
+    def _create_faiss_index(self, dim: int) -> Tuple[faiss.Index, Optional[Any]]:
         """
         创建FAISS索引，根据配置和硬件情况决定是否使用GPU。
+        返回 (index, gpu_resource) 元组，gpu_resource 需要在使用后释放
         """
+        gpu_resource = None
         if self.config.ENABLE_GPU and hasattr(faiss, 'StandardGpuResources') and torch.cuda.is_available():
             try:
-                res = faiss.StandardGpuResources()
-                return faiss.GpuIndexFlatIP(res, dim)
+                gpu_resource = faiss.StandardGpuResources()
+                index = faiss.GpuIndexFlatIP(gpu_resource, dim)
+                return index, gpu_resource
             except Exception:
                 # 如果GPU初始化失败，回退到CPU
-                return faiss.IndexFlatIP(dim)
+                return faiss.IndexFlatIP(dim), None
         else:
-            return faiss.IndexFlatIP(dim)
+            return faiss.IndexFlatIP(dim), None
 
     def _faiss_max_sim(self, query_vecs: np.ndarray, base_vecs: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """使用faiss进行最大相似度检索"""
@@ -432,12 +458,23 @@ class SimilarityService:
         query_vecs = query_vecs.astype(np.float32)
         
         dim = base_vecs.shape[1]
-        index = self._create_faiss_index(dim)
-        faiss.normalize_L2(base_vecs)
-        faiss.normalize_L2(query_vecs)
-        index.add(base_vecs)
-        sims, idxs = index.search(query_vecs, self.similarity_top_k)
-        return sims.flatten(), idxs.flatten()
+        index, gpu_resource = self._create_faiss_index(dim)
+        try:
+            faiss.normalize_L2(base_vecs)
+            faiss.normalize_L2(query_vecs)
+            index.add(base_vecs)
+            sims, idxs = index.search(query_vecs, self.similarity_top_k)
+            return sims.flatten(), idxs.flatten()
+        finally:
+            # 清理索引和GPU资源
+            try:
+                del index
+                if gpu_resource is not None:
+                    del gpu_resource
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+            except Exception:
+                pass
 
     def _batch_encode(self, texts: List[str]) -> np.ndarray:
         """分批向量化文本，防止内存溢出"""
@@ -480,6 +517,8 @@ class SimilarityService:
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+                # 同步CUDA操作，确保缓存清理完成
+                torch.cuda.synchronize()
             self.cleanup_counter = 0
 
     def _save_extracted_texts(self, task_id: str, tender_file_path: Optional[str], tender_segments: List[Dict[str, Any]],
@@ -608,6 +647,7 @@ class SimilarityService:
         5. 统计语法错误，找出多份文件中相同错误
         """
         start_time = time.time()
+        logger.info(f"任务 {task_id} 开始执行，投标文件数: {len(bid_file_paths)}")
         self._log_resource('TASK_START', {'task_id': task_id})
         timeout_flag = {'timeout': False}
         
@@ -677,12 +717,31 @@ class SimilarityService:
                     timer.cancel()
             except Exception:
                 pass
-            # 最终清理内存
+            
+            # 注意：Python 的 GC 会自动回收局部变量，这里主要清理 GPU 缓存和确保资源释放
+            # 函数结束后，局部变量（包括大向量数组）会自动被回收
+            
+            # 最终清理内存和GPU缓存
             self._cleanup_memory()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+            
+            # 确保 running_tasks 正确递减（即使前面有异常）
+            # 注意：先递减计数，释放锁后再处理队列，避免死锁
+            should_process_queue = False
             with self.task_lock:
-                self.running_tasks -= 1
+                if self.running_tasks > 0:
+                    self.running_tasks -= 1
+                    should_process_queue = True
+                else:
+                    logger.warning(f"任务 {task_id} 完成时 running_tasks 已为 0，可能存在计数错误")
+            
+            # 在锁外处理队列，避免死锁
+            if should_process_queue:
                 self._process_queue()
-            self._log_resource('TASK_FINALLY', {'task_id': task_id})
+            
+            self._log_resource('TASK_FINALLY', {'task_id': task_id, 'running_tasks': self.running_tasks})
 
     def _process_tender_document(self, tender_file_path: Optional[str]) -> Tuple[List[Dict[str, Any]], np.ndarray]:
         """
@@ -815,75 +874,80 @@ class SimilarityService:
                 
                 # 构建索引一次，多次查询
                 dim = vecs_j.shape[1]
-                index = self._create_faiss_index(dim)
+                index, gpu_resource = self._create_faiss_index(dim)
                 
-                # 确保向量数据类型为float32
-                vecs_j = vecs_j.astype(np.float32)
-                faiss.normalize_L2(vecs_j)
-                index.add(vecs_j)
-                
-                for k in range(0, vecs_i.shape[0], self.batch_size):
-                    end_idx = min(k + self.batch_size, vecs_i.shape[0])
-                    batch_vecs = vecs_i[k:end_idx].astype(np.float32)
-                    faiss.normalize_L2(batch_vecs)
-                    sims, idxs = index.search(batch_vecs, self.similarity_top_k)
+                try:
+                    # 确保向量数据类型为float32
+                    vecs_j = vecs_j.astype(np.float32)
+                    faiss.normalize_L2(vecs_j)
+                    index.add(vecs_j)
                     
-                    for idx_b in range(len(batch_vecs)):
-                        for top_k in range(self.similarity_top_k):
-                            sim = sims[idx_b][top_k]
-                            max_idx = idxs[idx_b][top_k]
-                            idx_i = k + idx_b
-                            
-                            # 确保索引有效
-                            if max_idx >= len(segs_j) or idx_i >= len(segs_i):
-                                logger.debug(f"索引越界: idx_i={idx_i}, len(segs_i)={len(segs_i)}, max_idx={max_idx}, len(segs_j)={len(segs_j)}")
-                                continue
-                            
-                            text1 = segs_i[idx_i]['text']
-                            text2 = segs_j[max_idx]['text']
-                            
-                            # OCR模式下所有文本都是普通文本，不区分表格
-                            is_table_cell_i = False
-                            is_table_cell_j = False
-                            is_table_row_i = False
-                            is_table_row_j = False
-                            is_table_cell_only_i = False
-                            is_table_cell_only_j = False
-                              
-                            # 判断是否为有效相似片段
-                            is_valid = self._is_valid_similarity(
-                                sim, text1, text2, 
-                                is_table_cell_i, is_table_cell_j,
-                                is_table_row_i, is_table_row_j,
-                                is_table_cell_only_i, is_table_cell_only_j,
-                                segs_i[idx_i], segs_j[max_idx]
-                            )
-                            
-                            if is_valid:
-                                # 检测规避行为
-                                evade_results = self._detect_evasion_behavior(text1, text2, sim)
+                    for k in range(0, vecs_i.shape[0], self.batch_size):
+                        end_idx = min(k + self.batch_size, vecs_i.shape[0])
+                        batch_vecs = vecs_i[k:end_idx].astype(np.float32)
+                        faiss.normalize_L2(batch_vecs)
+                        sims, idxs = index.search(batch_vecs, self.similarity_top_k)
+                        
+                        for idx_b in range(len(batch_vecs)):
+                            for top_k in range(self.similarity_top_k):
+                                sim = sims[idx_b][top_k]
+                                max_idx = idxs[idx_b][top_k]
+                                idx_i = k + idx_b
                                 
-                                # 构建相似片段详情
-                                detail = self._build_similarity_detail(
-                                    bid_file_paths[i], bid_file_paths[j],
-                                    segs_i[idx_i], segs_j[max_idx],
-                                    sim, evade_results,
+                                # 确保索引有效
+                                if max_idx >= len(segs_j) or idx_i >= len(segs_i):
+                                    logger.debug(f"索引越界: idx_i={idx_i}, len(segs_i)={len(segs_i)}, max_idx={max_idx}, len(segs_j)={len(segs_j)}")
+                                    continue
+                                
+                                text1 = segs_i[idx_i]['text']
+                                text2 = segs_j[max_idx]['text']
+                                
+                                # OCR模式下所有文本都是普通文本，不区分表格
+                                is_table_cell_i = False
+                                is_table_cell_j = False
+                                is_table_row_i = False
+                                is_table_row_j = False
+                                is_table_cell_only_i = False
+                                is_table_cell_only_j = False
+                                  
+                                # 判断是否为有效相似片段
+                                is_valid = self._is_valid_similarity(
+                                    sim, text1, text2, 
                                     is_table_cell_i, is_table_cell_j,
-                                    top_k
+                                    is_table_row_i, is_table_row_j,
+                                    is_table_cell_only_i, is_table_cell_only_j,
+                                    segs_i[idx_i], segs_j[max_idx]
                                 )
                                 
-                                details.append(detail)
-                        # 定期清理内存
-                        if (k // self.batch_size) % self.memory_cleanup_interval == 0:
-                            self._cleanup_memory()
-                    
-                    progress_cnt += 1
-                    self.tasks[task_id]["progress"]["current"] = progress_cnt
-                    
-                    # 清理索引资源
+                                if is_valid:
+                                    # 检测规避行为
+                                    evade_results = self._detect_evasion_behavior(text1, text2, sim)
+                                    
+                                    # 构建相似片段详情
+                                    detail = self._build_similarity_detail(
+                                        bid_file_paths[i], bid_file_paths[j],
+                                        segs_i[idx_i], segs_j[max_idx],
+                                        sim, evade_results,
+                                        is_table_cell_i, is_table_cell_j,
+                                        top_k
+                                    )
+                                    
+                                    details.append(detail)
+                            # 定期清理内存
+                            if (k // self.batch_size) % self.memory_cleanup_interval == 0:
+                                self._cleanup_memory()
+                        
+                        progress_cnt += 1
+                        self.tasks[task_id]["progress"]["current"] = progress_cnt
+                finally:
+                    # 清理索引和GPU资源
                     try:
                         del index
-                    except:
+                        if gpu_resource is not None:
+                            del gpu_resource
+                            if torch.cuda.is_available():
+                                torch.cuda.empty_cache()
+                    except Exception:
                         pass
         
         return details
